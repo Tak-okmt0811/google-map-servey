@@ -1,0 +1,7 @@
+.env
+.geocode_cache.csv
+places_*.xlsx
+__pycache__/
+.venv/
+*.pyc
+.DS_Store
