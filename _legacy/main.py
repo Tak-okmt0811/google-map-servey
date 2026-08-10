@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Export nearby place information from Google Places API to Excel.
+"""Export nearby place information using Google Places API (New / v1) & Geocoding API to Excel & CSV.
 
 Usage example:
-    GOOGLE_MAPS_API_KEY=xxxxx python google_places_export.py
-    GOOGLE_MAPS_API_KEY=xxxxx python google_places_export.py --address "大阪府淀川市西中島3丁目" --radius 500
+    GOOGLE_MAPS_API_KEY=xxxxx python google_places_export_new.py
+    GOOGLE_MAPS_API_KEY=xxxxx python google_places_export_new.py --address "大阪府淀川市西中島3丁目" --radius 500
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import argparse
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from math import atan2, cos, radians, sin, sqrt
@@ -23,9 +24,8 @@ import requests
 
 
 GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
-NEARBY_URL = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
-DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
-
+PLACES_SEARCH_TEXT_URL = "https://places.googleapis.com/v1/places:searchText"
+PLACES_DETAILS_BASE_URL = "https://places.googleapis.com/v1/places/"
 
 GENRE_MAP = {
     "bar": "BAR",
@@ -56,14 +56,36 @@ FEATURE_KEYWORDS = {
 }
 
 PRICE_MAP = {
-    0: "無料",
-    1: "￥1,000未満",
-    2: "￥1,000-2,000",
-    3: "￥2,000-4,000",
-    4: "￥4,000以上",
+    "PRICE_LEVEL_FREE": "無料",
+    "PRICE_LEVEL_INEXPENSIVE": "￥1,000未満",
+    "PRICE_LEVEL_MODERATE": "￥1,000-2,000",
+    "PRICE_LEVEL_EXPENSIVE": "￥2,000-4,000",
+    "PRICE_LEVEL_VERY_EXPENSIVE": "￥4,000以上",
 }
 
 WEEKDAYS_JA = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]
+
+
+def output_columns(origin_label: str) -> List[str]:
+    return [
+        "店舗名",
+        "ジャンル",
+        "サブジャンル",
+        "住所",
+        f"{origin_label}からの距離(m)",
+        "Google評価",
+        "口コミ件数",
+        "価格帯",
+        "営業時間",
+        "定休日",
+        "電話番号",
+        "公式サイト/SNS",
+        "特徴",
+        "深夜営業",
+        "競合度",
+        "ターゲット",
+        "備考",
+    ]
 
 
 @dataclass
@@ -79,7 +101,7 @@ class PlaceSummary:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Google Places API -> Excel exporter")
+    parser = argparse.ArgumentParser(description="Google Places API (New) -> Excel exporter")
     parser.add_argument(
         "--address",
         default="大阪府淀川市西中島3丁目",
@@ -97,17 +119,13 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="出力Excelパス。未指定時は日時付きファイル名を生成",
     )
+    parser.add_argument(
+        "--detail-workers",
+        type=int,
+        default=8,
+        help="詳細取得の並列数 (デフォルト: 8)",
+    )
     return parser.parse_args()
-
-
-def get_api_key() -> str:
-    load_env_file()
-    key = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
-    if not key:
-        raise RuntimeError(
-            "環境変数 GOOGLE_MAPS_API_KEY が設定されていません。"
-        )
-    return key
 
 
 def load_env_file(env_path: str = ".env") -> None:
@@ -125,6 +143,16 @@ def load_env_file(env_path: str = ".env") -> None:
         value = value.strip().strip('"').strip("'")
         if key and key not in os.environ:
             os.environ[key] = value
+
+
+def get_api_key() -> str:
+    load_env_file()
+    key = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError(
+            "環境変数 GOOGLE_MAPS_API_KEY が設定されていません。"
+        )
+    return key
 
 
 def geocode_address(address: str, api_key: str) -> Tuple[float, float, str]:
@@ -148,6 +176,142 @@ def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> int:
     a = sin(d_lat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(d_lon / 2) ** 2
     c = 2 * atan2(sqrt(a), sqrt(1 - a))
     return int(round(r * c))
+
+
+def _sub_centers(lat: float, lng: float, radius: int) -> List[Tuple[float, float, int]]:
+    """中心点 + オフセット点を返す（検索漏れ防止用）"""
+    if radius <= 300:
+        return [(lat, lng, radius)]
+    offset_m = radius * 0.44
+    d_lat = offset_m / 111000
+    d_lng = offset_m / (111000 * cos(radians(lat)))
+    sub_r = int(radius * 0.6)
+    diag_lat = d_lat * 0.707
+    diag_lng = d_lng * 0.707
+    return [
+        (lat, lng, radius),
+        (lat + d_lat, lng, sub_r),
+        (lat - d_lat, lng, sub_r),
+        (lat, lng + d_lng, sub_r),
+        (lat, lng - d_lng, sub_r),
+        (lat + diag_lat, lng + diag_lng, sub_r),
+        (lat + diag_lat, lng - diag_lng, sub_r),
+        (lat - diag_lat, lng + diag_lng, sub_r),
+        (lat - diag_lat, lng - diag_lng, sub_r),
+    ]
+
+
+def fetch_nearby_places(lat: float, lng: float, radius: int, api_key: str) -> Dict[str, PlaceSummary]:
+    keywords = ["bar", "居酒屋", "焼き鳥", "イタリアン", "ダイニング", "スナック", "和食", "カフェ", "レストラン", "ラーメン"]
+    places: Dict[str, PlaceSummary] = {}
+    centers = _sub_centers(lat, lng, radius)
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": "places.id,places.displayName,places.location,places.formattedAddress,places.types,places.rating,places.userRatingCount,nextPageToken",
+    }
+
+    for kw in keywords:
+        print(f"[INFO] Places API (New) キーワード検索: {kw}")
+        for c_lat, c_lng, c_radius in centers:
+            page_token = None
+            while True:
+                payload = {
+                    "textQuery": kw,
+                    "locationBias": {
+                        "circle": {
+                            "center": {"latitude": c_lat, "longitude": c_lng},
+                            "radius": float(c_radius),
+                        }
+                    },
+                    "languageCode": "ja",
+                }
+                if page_token:
+                    payload["pageToken"] = page_token
+
+                try:
+                    res = requests.post(PLACES_SEARCH_TEXT_URL, json=payload, headers=headers, timeout=20)
+                    res.raise_for_status()
+                    data = res.json()
+                except requests.RequestException as exc:
+                    print(f"[WARN] リクエストエラー: {exc}")
+                    break
+
+                results = data.get("places", [])
+                for p in results:
+                    place_id = p.get("id")
+                    if not place_id:
+                        continue
+                    loc = p.get("location", {})
+                    p_lat = loc.get("latitude")
+                    p_lng = loc.get("longitude")
+                    if p_lat is None or p_lng is None:
+                        continue
+
+                    display_name = p.get("displayName", {}).get("text", "")
+                    places[place_id] = PlaceSummary(
+                        place_id=place_id,
+                        name=display_name,
+                        lat=p_lat,
+                        lng=p_lng,
+                        vicinity=p.get("formattedAddress", ""),
+                        types=p.get("types", []),
+                        rating=p.get("rating"),
+                        user_ratings_total=p.get("userRatingCount"),
+                    )
+
+                page_token = data.get("nextPageToken")
+                if not page_token:
+                    break
+                time.sleep(1.5)  # ページネーション時のウェイト
+
+    return places
+
+
+def fetch_place_details(place_id: str, api_key: str) -> Dict[str, object]:
+    url = f"{PLACES_DETAILS_BASE_URL}{place_id}"
+    headers = {
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": "id,displayName,formattedAddress,nationalPhoneNumber,internationalPhoneNumber,websiteUri,rating,userRatingCount,priceLevel,regularOpeningHours,types,editorialSummary",
+    }
+    params = {"languageCode": "ja"}
+
+    try:
+        res = requests.get(url, headers=headers, params=params, timeout=20)
+        res.raise_for_status()
+        return res.json()
+    except Exception:
+        return {}
+
+
+def fetch_all_place_details(place_ids: List[str], api_key: str, workers: int) -> Dict[str, Dict[str, object]]:
+    if not place_ids:
+        return {}
+
+    safe_workers = max(1, min(workers, 16, len(place_ids)))
+    details_map: Dict[str, Dict[str, object]] = {}
+
+    with ThreadPoolExecutor(max_workers=safe_workers) as executor:
+        future_map = {
+            executor.submit(fetch_place_details, place_id, api_key): place_id
+            for place_id in place_ids
+        }
+
+        done_count = 0
+        total = len(future_map)
+        for future in as_completed(future_map):
+            place_id = future_map[future]
+            try:
+                details_map[place_id] = future.result()
+            except Exception:
+                details_map[place_id] = {}
+
+            done_count += 1
+            if done_count % 25 == 0 or done_count == total:
+                print(f"[INFO] 詳細取得進捗: {done_count}/{total}")
+
+    return details_map
 
 
 def infer_genre(types: List[str], name: str) -> str:
@@ -196,64 +360,6 @@ def infer_late_night(weekday_text: List[str]) -> str:
     return "×"
 
 
-def split_postal_and_address(address: str) -> Tuple[str, str]:
-    cleaned = re.sub(r"^\s*日本[、,\s]*", "", address.strip())
-    postal_code = ""
-
-    m = re.search(r"〒?\s*(\d{3}-\d{4})", cleaned)
-    if m:
-        postal_code = m.group(1)
-        cleaned = (cleaned[: m.start()] + cleaned[m.end() :]).strip(" 、,")
-
-    cleaned = re.sub(r"\s{2,}", " ", cleaned)
-    return postal_code, cleaned
-
-
-def normalize_time_text(text: str) -> str:
-    t = text
-    t = t.replace("～", "-").replace("−", "-").replace("ー", "-").replace("—", "-").replace("–", "-")
-    t = t.replace("：", ":")
-    t = t.replace("翌", "")
-    t = re.sub(r"(\d{1,2})時(\d{1,2})分", lambda m: f"{int(m.group(1)):02d}:{int(m.group(2)):02d}", t)
-    t = re.sub(r"(\d{1,2})時", lambda m: f"{int(m.group(1)):02d}:00", t)
-    t = re.sub(r"\s+", "", t)
-    return t
-
-
-def parse_opening_hours_by_day(weekday_text: List[str]) -> Dict[str, Dict[str, str]]:
-    day_hours: Dict[str, Dict[str, str]] = {
-        d: {"raw": "", "start": "", "end": ""} for d in WEEKDAYS_JA
-    }
-
-    for line in weekday_text:
-        m = re.match(r"^(月曜日|火曜日|水曜日|木曜日|金曜日|土曜日|日曜日)\s*[:：]\s*(.+)$", line.strip())
-        if not m:
-            continue
-
-        day = m.group(1)
-        value = m.group(2).strip()
-        normalized = normalize_time_text(value)
-        day_hours[day]["raw"] = normalized
-
-        if any(x in normalized.lower() for x in ["休業", "定休日", "休み", "closed"]):
-            day_hours[day]["raw"] = "休業"
-            continue
-
-        if "24時間営業" in normalized:
-            day_hours[day]["start"] = "00:00"
-            day_hours[day]["end"] = "24:00"
-            continue
-
-        ranges = re.findall(r"(\d{1,2}:\d{2})-(\d{1,2}:\d{2})", normalized)
-        if ranges:
-            start, _ = ranges[0]
-            _, end = ranges[-1]
-            day_hours[day]["start"] = start
-            day_hours[day]["end"] = end
-
-    return day_hours
-
-
 def infer_competitiveness(distance_m: int, rating: Optional[float], reviews: Optional[int], genre: str) -> str:
     score = 0
     if distance_m <= 300:
@@ -296,126 +402,49 @@ def infer_target(genre: str, price_text: str, late_night: str) -> str:
     return "・".join(dict.fromkeys(targets))
 
 
-def fetch_nearby_places(lat: float, lng: float, radius: int, api_key: str) -> Dict[str, PlaceSummary]:
-    keywords = ["bar", "居酒屋", "焼き鳥", "イタリアン"]
-    places: Dict[str, PlaceSummary] = {}
-
-    for kw in keywords:
-        next_token: Optional[str] = None
-        page_count = 0
-
-        while True:
-            params = {
-                "location": f"{lat},{lng}",
-                "radius": radius,
-                "keyword": kw,
-                "language": "ja",
-                "key": api_key,
-            }
-            if next_token:
-                params = {"pagetoken": next_token, "key": api_key, "language": "ja"}
-
-            res = requests.get(NEARBY_URL, params=params, timeout=20)
-            res.raise_for_status()
-            payload = res.json()
-            status = payload.get("status")
-
-            if status not in {"OK", "ZERO_RESULTS"}:
-                if status == "INVALID_REQUEST" and next_token:
-                    time.sleep(2)
-                    continue
-                raise RuntimeError(f"Nearby Search失敗: status={status}")
-
-            for r in payload.get("results", []):
-                place_id = r.get("place_id")
-                if not place_id:
-                    continue
-                geo = r.get("geometry", {}).get("location", {})
-                if "lat" not in geo or "lng" not in geo:
-                    continue
-
-                places[place_id] = PlaceSummary(
-                    place_id=place_id,
-                    name=r.get("name", ""),
-                    lat=geo["lat"],
-                    lng=geo["lng"],
-                    vicinity=r.get("vicinity", ""),
-                    types=r.get("types", []),
-                    rating=r.get("rating"),
-                    user_ratings_total=r.get("user_ratings_total"),
-                )
-
-            next_token = payload.get("next_page_token")
-            page_count += 1
-            if not next_token or page_count >= 3:
-                break
-            time.sleep(2)
-
-    return places
-
-
-def fetch_place_details(place_id: str, api_key: str) -> Dict[str, object]:
-    fields = [
-        "name",
-        "formatted_address",
-        "international_phone_number",
-        "website",
-        "rating",
-        "user_ratings_total",
-        "price_level",
-        "opening_hours",
-        "types",
-        "editorial_summary",
-    ]
-    params = {
-        "place_id": place_id,
-        "fields": ",".join(fields),
-        "language": "ja",
-        "key": api_key,
-    }
-    res = requests.get(DETAILS_URL, params=params, timeout=20)
-    res.raise_for_status()
-    payload = res.json()
-    status = payload.get("status")
-    if status != "OK":
-        return {}
-    return payload.get("result", {})
-
-
 def build_rows(
     origin_label: str,
     origin_lat: float,
     origin_lng: float,
     places: Dict[str, PlaceSummary],
     api_key: str,
+    detail_workers: int,
 ) -> List[Dict[str, object]]:
     rows: List[Dict[str, object]] = []
+    details_map = fetch_all_place_details(
+        [p.place_id for p in places.values()],
+        api_key,
+        workers=detail_workers,
+    )
 
     for p in places.values():
-        details = fetch_place_details(p.place_id, api_key)
+        details = details_map.get(p.place_id, {})
         types_val = details.get("types")
         types = types_val if isinstance(types_val, list) else p.types
-        name = str(details.get("name") or p.name)
-        raw_address = str(details.get("formatted_address") or p.vicinity)
-        postal_code, address = split_postal_and_address(raw_address)
 
-        opening_hours_val = details.get("opening_hours")
-        opening_hours = opening_hours_val if isinstance(opening_hours_val, dict) else {}
-        weekday_text_val = opening_hours.get("weekday_text")
-        weekday_text = weekday_text_val if isinstance(weekday_text_val, list) else []
-        day_hours = parse_opening_hours_by_day(weekday_text)
-        phone = details.get("international_phone_number", "")
-        website = details.get("website", "")
+        disp = details.get("displayName")
+        name = disp.get("text", p.name) if isinstance(disp, dict) else p.name
+
+        address = str(details.get("formattedAddress") or p.vicinity)
+
+        opening_hours = details.get("regularOpeningHours", {})
+        weekday_text = opening_hours.get("weekdayDescriptions", []) if isinstance(opening_hours, dict) else []
+        opening_hours_str = " | ".join(weekday_text) if weekday_text else ""
+
+        phone = details.get("nationalPhoneNumber") or details.get("internationalPhoneNumber", "")
+        website = details.get("websiteUri", "")
+
         rating_val = details.get("rating", p.rating)
         rating = float(rating_val) if isinstance(rating_val, (int, float)) else p.rating
-        reviews_val = details.get("user_ratings_total", p.user_ratings_total)
-        reviews = int(reviews_val) if isinstance(reviews_val, (int, float)) else p.user_ratings_total
-        price_level_val = details.get("price_level")
-        price_level = int(price_level_val) if isinstance(price_level_val, int) else None
-        price_text = PRICE_MAP.get(price_level, "") if price_level is not None else ""
 
-        summary = details.get("editorial_summary", {})
-        review_text = summary.get("overview", "") if isinstance(summary, dict) else ""
+        reviews_val = details.get("userRatingCount", p.user_ratings_total)
+        reviews = int(reviews_val) if isinstance(reviews_val, (int, float)) else p.user_ratings_total
+
+        price_level = details.get("priceLevel")
+        price_text = PRICE_MAP.get(str(price_level), "") if price_level else ""
+
+        summary = details.get("editorialSummary", {})
+        review_text = summary.get("text", "") if isinstance(summary, dict) else ""
 
         distance_m = haversine_m(origin_lat, origin_lng, p.lat, p.lng)
         genre = infer_genre(types, name)
@@ -431,35 +460,12 @@ def build_rows(
                 "店舗名": name,
                 "ジャンル": genre,
                 "サブジャンル": subgenre,
-                "郵便番号": postal_code,
                 "住所": address,
-                "緯度": p.lat,
-                "経度": p.lng,
                 f"{origin_label}からの距離(m)": distance_m,
                 "Google評価": rating,
                 "口コミ件数": reviews,
                 "価格帯": price_text,
-                "月曜営業時間": day_hours["月曜日"]["raw"],
-                "月曜営業開始": day_hours["月曜日"]["start"],
-                "月曜営業終了": day_hours["月曜日"]["end"],
-                "火曜営業時間": day_hours["火曜日"]["raw"],
-                "火曜営業開始": day_hours["火曜日"]["start"],
-                "火曜営業終了": day_hours["火曜日"]["end"],
-                "水曜営業時間": day_hours["水曜日"]["raw"],
-                "水曜営業開始": day_hours["水曜日"]["start"],
-                "水曜営業終了": day_hours["水曜日"]["end"],
-                "木曜営業時間": day_hours["木曜日"]["raw"],
-                "木曜営業開始": day_hours["木曜日"]["start"],
-                "木曜営業終了": day_hours["木曜日"]["end"],
-                "金曜営業時間": day_hours["金曜日"]["raw"],
-                "金曜営業開始": day_hours["金曜日"]["start"],
-                "金曜営業終了": day_hours["金曜日"]["end"],
-                "土曜営業時間": day_hours["土曜日"]["raw"],
-                "土曜営業開始": day_hours["土曜日"]["start"],
-                "土曜営業終了": day_hours["土曜日"]["end"],
-                "日曜営業時間": day_hours["日曜日"]["raw"],
-                "日曜営業開始": day_hours["日曜日"]["start"],
-                "日曜営業終了": day_hours["日曜日"]["end"],
+                "営業時間": opening_hours_str,
                 "定休日": closed_day,
                 "電話番号": phone,
                 "公式サイト/SNS": website,
@@ -495,21 +501,25 @@ def main() -> None:
     origin_label = normalize_origin_label(args.address)
     print(f"[INFO] 基点座標: {lat:.6f}, {lng:.6f} ({formatted})")
 
-    print(f"[INFO] Nearby Search実行中: radius={args.radius}m")
+    print(f"[INFO] Places API (New) 実行中: radius={args.radius}m")
     places = fetch_nearby_places(lat, lng, args.radius, api_key)
     if not places:
         raise RuntimeError("検索結果が0件でした。条件を見直してください。")
 
     print(f"[INFO] 詳細取得中: {len(places)}件")
-    rows = build_rows(origin_label, lat, lng, places, api_key)
+    rows = build_rows(origin_label, lat, lng, places, api_key, args.detail_workers)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     output = args.output or f"places_{origin_label}_{args.radius}m_{ts}.xlsx"
     df = pd.DataFrame(rows)
+    expected_cols = output_columns(origin_label)
+    for col in expected_cols:
+        if col not in df.columns:
+            df[col] = ""
+    df = df[expected_cols]
     df.to_excel(output, index=False)
     print(f"[DONE] Excel出力完了: {output} ({len(df)}件)")
 
-    # Community Cloud配布用: data/places.csv に上書き保存
     csv_dir = Path(output).resolve().parent / "data"
     csv_dir.mkdir(exist_ok=True)
     csv_path = csv_dir / "places.csv"
@@ -519,3 +529,10 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    
+"""
+with open('google_places_export_new.py', 'w', encoding='utf-8') as f:
+    f.write(script_content)
+
+print("Saved google_places_export_new.py successfully!")
+"""
