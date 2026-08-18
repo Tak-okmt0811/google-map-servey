@@ -1,0 +1,44 @@
+name: Build Windows exe
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Build exe with PyInstaller
+        run: uv run pyinstaller viewer/build_exe.spec
+
+      - name: Zip build output
+        shell: pwsh
+        run: Compress-Archive -Path dist/competitor-dashboard/* -DestinationPath competitor-dashboard-windows.zip
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: competitor-dashboard-windows
+          path: competitor-dashboard-windows.zip
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: competitor-dashboard-windows.zip

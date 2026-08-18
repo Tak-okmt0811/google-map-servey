@@ -6,7 +6,7 @@
 # のように切り替えて使います。
 
 [search]
-default_address = "大阪府淀川市西中島3丁目"
+default_address = "大阪府大阪市北区梅田1丁目"
 keywords = ["bar", "居酒屋", "焼き鳥", "イタリアン", "ダイニング", "スナック", "ラーメン"]
 
 # Google Places の types -> ジャンル表示名

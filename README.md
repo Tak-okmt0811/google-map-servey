@@ -62,7 +62,7 @@ uv run python -m collector.export
 ```
 
 デフォルトは `collector/configs/bar_izakaya.toml` の設定（バー・居酒屋向けキーワード、
-「大阪府淀川市西中島3丁目」中心・半径500m）で検索します。
+汎用サンプル住所「大阪府大阪市北区梅田1丁目」中心・半径500m）で検索します。
 
 | オプション | 説明 | 例 |
 |---|---|---|
@@ -76,6 +76,17 @@ uv run python -m collector.export
 
 `collector/configs/bar_izakaya.toml` をコピーして、検索キーワード・ジャンル判定辞書・
 サブジャンル/特徴キーワードを書き換えれば、飲食店以外の業種にも流用できます。
+
+### 実際の調査エリアをローカルだけで保持する
+
+クライアント案件など、実際の調査対象エリアをリポジトリに残したくない場合は、
+ファイル名を `*.local.toml` にすると `.gitignore` で自動的に除外されます。
+
+```bash
+cp collector/configs/bar_izakaya.toml collector/configs/bar_izakaya.local.toml
+# default_address を実際の調査エリアに書き換えてから
+uv run python -m collector.export --config collector/configs/bar_izakaya.local.toml
+```
 
 ```bash
 cp collector/configs/bar_izakaya.toml collector/configs/my_profile.toml
@@ -137,6 +148,31 @@ uv run pyinstaller viewer/build_exe.spec
 
 macOS上ではmacOS版バイナリとしてビルド・動作確認は可能ですが、Windows向け配布物としては
 使えません（実際のexe生成は必ずWindows環境で行ってください）。
+
+### ビルド（GitHub Actionsで自動化する場合）
+
+Windows機を用意しなくても、[.github/workflows/build-exe.yml](.github/workflows/build-exe.yml) が
+GitHub上のWindows runnerで自動的にビルドします。
+
+**手動実行する場合**
+
+1. GitHubリポジトリの `Actions` タブ → `Build Windows exe` を選択
+2. `Run workflow` ボタンを押す（`workflow_dispatch`）
+3. 実行が終わったら、そのRunのページ下部 `Artifacts` から
+   `competitor-dashboard-windows` をダウンロード（zip、`dist/competitor-dashboard/` 一式を圧縮したもの）
+
+**タグをpushしてリリースとして公開する場合**
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+`v` から始まるタグをpushすると、ビルド後に自動でGitHub Releaseが作成され、
+zipが添付されます。クライアントには、そのReleaseページのダウンロードリンクを共有できます。
+
+ビルド生成物（`dist/`, `build/`）はリポジトリにcommitしません。常にActions側で
+都度ビルドし、Artifacts/ReleasesからDLする運用にしてください。
 
 ---
 
