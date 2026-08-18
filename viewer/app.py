@@ -1,55 +1,32 @@
 #!/usr/bin/env python3
-"""Streamlit app for competitor analysis from Google Places export Excel."""
+"""Streamlit viewer for competitor analysis exports.
+
+このアプリはGoogle APIを一切呼び出しません。collector/export.py が事前に生成した
+CSV/Excel（緯度・経度・拠点座標を含む）を読み込んで表示するだけです。
+APIキーは不要で、公開デプロイ・exe配布のどちらでも安全に配布できます。
+"""
 
 from __future__ import annotations
 
 import math
-import os
+import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import pandas as pd
 import plotly.express as px
 import pydeck as pdk
-import requests
 import streamlit as st
 
-GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
-BASE_DIR = Path(__file__).resolve().parent
-GEOCODE_CACHE_PATH = BASE_DIR / ".geocode_cache.csv"
+# PyInstallerでexe化した場合、実行ファイルと同じ場所を基準にする。
+# 通常のstreamlit run実行時はこのスクリプトの場所を基準にする。
+if getattr(sys, "frozen", False):
+    APP_DIR = Path(sys.executable).resolve().parent
+else:
+    APP_DIR = Path(__file__).resolve().parent
 
-
-def load_env_file(env_path: str = ".env") -> None:
-    path = Path(env_path)
-    if not path.exists():
-        return
-
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = value
-
-
-def geocode_address(address: str, api_key: str) -> Optional[Tuple[float, float]]:
-    params = {"address": address, "language": "ja", "key": api_key}
-    try:
-        res = requests.get(GEOCODE_URL, params=params, timeout=20)
-        res.raise_for_status()
-        data = res.json()
-    except requests.RequestException:
-        return None
-
-    if data.get("status") != "OK" or not data.get("results"):
-        return None
-
-    loc = data["results"][0]["geometry"]["location"]
-    return float(loc["lat"]), float(loc["lng"])
+# ファイル探索対象: input/ を最優先、次にアプリと同階層、最後にdata/（開発時のデフォルト運用）
+SEARCH_DIRS = [APP_DIR / "input", APP_DIR, APP_DIR / "data"]
 
 
 def find_distance_col(df: pd.DataFrame) -> Optional[str]:
@@ -141,115 +118,24 @@ def build_circle_path(lat: float, lng: float, radius_m: int, points: int = 72) -
     return coords
 
 
-def load_cache() -> pd.DataFrame:
-    if not GEOCODE_CACHE_PATH.exists():
-        return pd.DataFrame(columns=["住所", "緯度", "経度"])
-    return pd.read_csv(GEOCODE_CACHE_PATH)
-
-
-def save_cache(cache_df: pd.DataFrame) -> None:
-    cache_df.drop_duplicates(subset=["住所"], keep="last").to_csv(GEOCODE_CACHE_PATH, index=False)
-
-
-def geocode_dataframe(df: pd.DataFrame, address_col: str, api_key: str) -> pd.DataFrame:
-    out = df.copy()
-    if "緯度" not in out.columns:
-        out["緯度"] = pd.NA
-    if "経度" not in out.columns:
-        out["経度"] = pd.NA
-
-    cache = load_cache()
-    cache_map: Dict[str, Tuple[float, float]] = {}
-    for _, row in cache.iterrows():
-        addr = str(row.get("住所", "")).strip()
-        lat = row.get("緯度")
-        lng = row.get("経度")
-        if addr and pd.notna(lat) and pd.notna(lng):
-            cache_map[addr] = (float(lat), float(lng))
-
-    new_rows: List[Dict[str, object]] = []
-
-    missing_mask = out["緯度"].isna() | out["経度"].isna()
-    out.loc[missing_mask, address_col] = out.loc[missing_mask, address_col].astype(str)
-
-    # Fill from local cache first.
-    for idx, row in out.loc[missing_mask].iterrows():
-        address = str(row.get(address_col, "")).strip()
-        if address in cache_map:
-            lat, lng = cache_map[address]
-            out.at[idx, "緯度"] = lat
-            out.at[idx, "経度"] = lng
-
-    still_missing_mask = out["緯度"].isna() | out["経度"].isna()
-    addresses = (
-        out.loc[still_missing_mask, address_col]
-        .dropna()
-        .astype(str)
-        .str.strip()
-    )
-    unique_missing = [a for a in addresses.unique().tolist() if a and a not in cache_map]
-
-    # Avoid long waits: geocode at most 60 new addresses per run.
-    request_targets = unique_missing[:60]
-    if request_targets:
-        progress = st.progress(0, text="住所を座標変換中...")
-    else:
-        progress = None
-
-    for i, address in enumerate(request_targets, start=1):
-        result = geocode_address(address, api_key)
-        if result is None:
-            continue
-        lat, lng = result
-        cache_map[address] = (lat, lng)
-        new_rows.append({"住所": address, "緯度": lat, "経度": lng})
-        if progress is not None:
-            progress.progress(i / len(request_targets), text=f"住所を座標変換中... {i}/{len(request_targets)}")
-
-    if progress is not None:
-        progress.empty()
-
-    if len(unique_missing) > 60:
-        st.info(f"未変換住所が多いため、今回は60件まで変換しました（残り {len(unique_missing) - 60} 件）。")
-
-    # Apply newly cached coordinates.
-    for idx, row in out.loc[out["緯度"].isna() | out["経度"].isna()].iterrows():
-        address = str(row.get(address_col, "")).strip()
-        if address in cache_map:
-            lat, lng = cache_map[address]
-            out.at[idx, "緯度"] = lat
-            out.at[idx, "経度"] = lng
-
-    if new_rows:
-        cache = pd.concat([cache, pd.DataFrame(new_rows)], ignore_index=True)
-        save_cache(cache)
-
-    return out
-
-
-BUNDLED_CSV = BASE_DIR / "data" / "places.csv"
-
-
-def latest_export_file() -> str:
-    # bundled CSV takes priority over generated Excel files
-    if BUNDLED_CSV.exists():
-        return str(BUNDLED_CSV)
-    files = sorted(BASE_DIR.glob("places_*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return str(files[0]) if files else ""
-
-
 def list_export_files() -> List[str]:
-    if BUNDLED_CSV.exists():
-        return [str(BUNDLED_CSV)]
-    files = sorted(BASE_DIR.glob("places_*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return [str(p) for p in files]
+    seen: dict[str, float] = {}
+    for d in SEARCH_DIRS:
+        if not d.is_dir():
+            continue
+        for pattern in ("*.csv", "*.xlsx"):
+            for p in d.glob(pattern):
+                if p.name.startswith("."):
+                    continue
+                seen[str(p)] = p.stat().st_mtime
+    return [path for path, _ in sorted(seen.items(), key=lambda kv: kv[1], reverse=True)]
 
 
-def resolve_excel_path(path_text: str) -> Path:
+def resolve_path(path_text: str) -> Path:
     p = Path(path_text).expanduser()
     if p.is_absolute():
         return p
-    return (BASE_DIR / p).resolve()
+    return (APP_DIR / p).resolve()
 
 
 def render_map(df: pd.DataFrame, origin_lat: float, origin_lng: float, radius_m: int, dot_size: int) -> None:
@@ -304,20 +190,20 @@ st.set_page_config(page_title="競合分析ダッシュボード", page_icon="�
 st.title("競合分析ダッシュボード")
 st.caption("距離・Google評価・口コミ件数を軸に競争圧を可視化")
 
-load_env_file()
-
 with st.sidebar:
     st.header("設定")
-    default_path = latest_export_file()
     export_files = list_export_files()
     if export_files:
-        selected_file = st.selectbox("検出したExcel", export_files, index=0)
-        use_detected = st.checkbox("検出ファイルを使う", value=True)
+        selected_file = st.selectbox("検出したファイル", export_files, index=0)
     else:
         selected_file = ""
-        use_detected = False
+        st.warning(
+            "CSV/Excelファイルが見つかりません。\n\n"
+            f"次のいずれかに調査結果ファイルを置いてください:\n"
+            + "\n".join(f"- {d}" for d in SEARCH_DIRS)
+        )
 
-    excel_path = st.text_input("分析対象Excel", value=default_path)
+    manual_path = st.text_input("または直接パスを指定（任意）", value="")
 
     w_dist = st.slider("重み: 距離", min_value=0.0, max_value=1.0, value=0.40, step=0.05)
     w_rate = st.slider("重み: Google評価", min_value=0.0, max_value=1.0, value=0.35, step=0.05)
@@ -328,26 +214,23 @@ with st.sidebar:
 
 
 @st.cache_data(show_spinner=False)
-def read_excel_cached(path_str: str) -> pd.DataFrame:
+def read_export_cached(path_str: str) -> pd.DataFrame:
     if path_str.endswith(".csv"):
         return pd.read_csv(path_str, encoding="utf-8-sig")
     return pd.read_excel(path_str)
 
-effective_excel_path = selected_file if (use_detected and selected_file) else excel_path
-excel_file = resolve_excel_path(effective_excel_path) if effective_excel_path else Path("")
 
-if not effective_excel_path or not excel_file.exists():
-    st.error("分析対象のExcelファイルが見つかりません。")
-    if export_files:
-        st.info(f"検出済み候補: {export_files[0]}")
-    else:
-        st.info(f"{BASE_DIR} に places_*.xlsx が見つかりません。")
+effective_path = manual_path.strip() or selected_file
+target_file = resolve_path(effective_path) if effective_path else Path("")
+
+if not effective_path or not target_file.exists():
+    st.error("分析対象のファイルが見つかりません。サイドバーでファイルを選択・指定してください。")
     st.stop()
 
 try:
-    df_raw = read_excel_cached(str(excel_file))
+    df_raw = read_export_cached(str(target_file))
 except Exception as exc:  # pragma: no cover
-    st.error(f"Excel読み込みに失敗しました: {exc}")
+    st.error(f"ファイル読み込みに失敗しました: {exc}")
     st.stop()
 
 distance_col = find_distance_col(df_raw)
@@ -363,43 +246,37 @@ if missing:
     st.stop()
 
 origin_label = infer_origin_label(distance_col)
-default_origin_addr = f"大阪府大阪市淀川区{origin_label}"
-with st.sidebar:
-    origin_address = st.text_input("拠点住所（地図中心）", value=default_origin_addr)
-
-api_key = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
-origin_latlng = geocode_address(origin_address, api_key) if api_key else None
 
 lat_col, lng_col = find_lat_lng_cols(df_raw)
 df = df_raw.copy()
-
 if lat_col and lng_col:
     df["緯度"] = pd.to_numeric(df[lat_col], errors="coerce")
     df["経度"] = pd.to_numeric(df[lng_col], errors="coerce")
-    # lat/lng already embedded: derive origin from data mean if API key absent
-    if origin_latlng is None:
-        mean_lat = df["緯度"].mean(skipna=True)
-        mean_lng = df["経度"].mean(skipna=True)
-        if pd.notna(mean_lat) and pd.notna(mean_lng):
-            origin_latlng = (float(mean_lat), float(mean_lng))
-else:
-    with st.sidebar:
-        use_geocode = st.checkbox("住所から座標変換して地図表示", value=True)
-        rerun_geocode = st.button("座標変換を再実行")
 
-    if use_geocode:
-        if api_key:
-            geo_state_key = f"geo::{excel_file}"
-            should_run = rerun_geocode or geo_state_key not in st.session_state
-            if should_run:
-                with st.spinner("住所を座標変換しています..."):
-                    st.session_state[geo_state_key] = geocode_dataframe(df, "住所", api_key)
-            df = st.session_state.get(geo_state_key, df)
-        else:
-            st.warning("GOOGLE_MAPS_API_KEY がないため、店舗座標の自動変換をスキップしました。")
+# 拠点座標: エクスポート済みの列があればそれを使用（推奨）。
+# 無い古い形式のファイルの場合は店舗座標の平均で代用する。
+origin_latlng: Optional[Tuple[float, float]] = None
+if "拠点緯度" in df.columns and "拠点経度" in df.columns:
+    o_lat = pd.to_numeric(df["拠点緯度"], errors="coerce").dropna()
+    o_lng = pd.to_numeric(df["拠点経度"], errors="coerce").dropna()
+    if not o_lat.empty and not o_lng.empty:
+        origin_latlng = (float(o_lat.iloc[0]), float(o_lng.iloc[0]))
 
-if origin_latlng is None:
-    st.warning("拠点住所を座標変換できませんでした。地図中心は店舗平均座標を使います。")
+origin_address = ""
+if "拠点住所" in df.columns:
+    addr_series = df["拠点住所"].dropna()
+    if not addr_series.empty:
+        origin_address = str(addr_series.iloc[0])
+
+if origin_latlng is None and "緯度" in df.columns and "経度" in df.columns:
+    mean_lat = df["緯度"].mean(skipna=True)
+    mean_lng = df["経度"].mean(skipna=True)
+    if pd.notna(mean_lat) and pd.notna(mean_lng):
+        origin_latlng = (float(mean_lat), float(mean_lng))
+        st.info("拠点座標の列が見つからないため、店舗座標の平均を地図中心として使用しています。")
+
+with st.sidebar:
+    st.caption(f"拠点: {origin_address or origin_label}")
 
 scored = build_competitor_score(df, distance_col, w_dist, w_rate, w_reviews)
 scored["競合ランク"] = scored["競合スコア"].apply(score_band)

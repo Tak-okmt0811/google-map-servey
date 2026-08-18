@@ -12,3 +12,9 @@ dependencies = [
     "requests>=2.34.2",
     "streamlit>=1.61.1",
 ]
+
+[dependency-groups]
+# exe化(Windows向け)のビルド時のみ必要。viewer実行やcollector実行には不要。
+dev = [
+    "pyinstaller>=6.11.0",
+]

@@ -1,0 +1,51 @@
+# 収集プロファイル: バー・居酒屋・飲食店向け（従来のデフォルト設定を移設したもの）
+#
+# このファイルを複製して用途別のプロファイルを増やせます。
+# 例: collector/configs/beauty_salon.toml を作り、
+#     python -m collector.export --config collector/configs/beauty_salon.toml
+# のように切り替えて使います。
+
+[search]
+default_address = "大阪府淀川市西中島3丁目"
+keywords = ["bar", "居酒屋", "焼き鳥", "イタリアン", "ダイニング", "スナック", "ラーメン"]
+
+# Google Places の types -> ジャンル表示名
+[genre_map]
+bar = "BAR"
+night_club = "BAR"
+liquor_store = "BAR"
+restaurant = "レストラン"
+meal_takeaway = "レストラン"
+cafe = "カフェ"
+bakery = "ベーカリー"
+
+# typesで判定できない場合に、店舗名に含まれる文字列からジャンルを推定するフォールバック
+[genre_name_fallback]
+"居酒屋" = "居酒屋"
+"焼鳥" = "焼鳥"
+"焼き鳥" = "焼鳥"
+"イタリアン" = "イタリアン"
+"bar" = "BAR"
+
+# サブジャンル判定: 表示ラベル -> 一致させるキーワード群（店舗名・typesを対象に部分一致）
+[subgenre_keywords]
+"ショットバー" = ["shot", "ショット"]
+"ダイニングバー" = ["dining", "ダイニング"]
+"ワインバー" = ["wine", "ワイン"]
+"スポーツバー" = ["sports", "スポーツ"]
+"居酒屋" = ["izakaya", "居酒屋"]
+"焼鳥" = ["yakitori", "焼き鳥", "焼鳥"]
+"イタリアン" = ["italian", "イタリアン"]
+
+# 特徴タグ判定: 表示ラベル -> 一致させるキーワード群（店舗名・営業時間テキスト・口コミ要約を対象）
+[feature_keywords]
+"個室" = ["個室", "private"]
+"喫煙" = ["喫煙", "smoking"]
+"ダーツ" = ["ダーツ", "darts"]
+"カラオケ" = ["カラオケ", "karaoke"]
+"テラス" = ["テラス", "terrace"]
+
+# ターゲット層推定に使うジャンル分類
+[target_rules]
+salaryman_genres = ["BAR", "居酒屋"]
+women_genres = ["イタリアン", "カフェ"]

@@ -5,4 +5,15 @@ __pycache__/
 .venv/
 *.pyc
 .DS_Store
-.csv
+
+# 実データ（クライアント納品用など）はcommitしない。
+# 公開ポートフォリオ用のダミーデータのみ例外的にcommit対象にする。
+*.csv
+!viewer/data/sample_places.csv
+
+# viewerのexe配布で使うローカル入力フォルダ（実データが置かれる想定）
+input/
+
+# PyInstallerのビルド生成物
+build/
+dist/

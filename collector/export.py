@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Export nearby place information using Google Places API (New / v1) & Geocoding API to Excel & CSV.
 
+このスクリプトはご自身のGoogle Maps Platform APIキーを消費します。
+ローカル環境（または管理者専用の環境）でのみ実行し、公開アプリからは実行しないでください。
+
 Usage example:
-    GOOGLE_MAPS_API_KEY=xxxxx python google_places_export_new.py
-    GOOGLE_MAPS_API_KEY=xxxxx python google_places_export_new.py --address "大阪府淀川市西中島3丁目" --radius 500
+    python -m collector.export
+    python -m collector.export --address "大阪府淀川市西中島3丁目" --radius 500
+    python -m collector.export --config collector/configs/beauty_salon.toml --address "東京都渋谷区"
 """
 
 from __future__ import annotations
 
 import argparse
 import os
-import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -22,39 +25,20 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import requests
 
+try:
+    from .config import CollectorConfig, DEFAULT_CONFIG_PATH, load_config
+except ImportError:  # `python collector/export.py` のように直接実行された場合
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from collector.config import CollectorConfig, DEFAULT_CONFIG_PATH, load_config
+
 
 GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
 PLACES_SEARCH_TEXT_URL = "https://places.googleapis.com/v1/places:searchText"
 PLACES_DETAILS_BASE_URL = "https://places.googleapis.com/v1/places/"
 
-GENRE_MAP = {
-    "bar": "BAR",
-    "night_club": "BAR",
-    "liquor_store": "BAR",
-    "restaurant": "レストラン",
-    "meal_takeaway": "レストラン",
-    "cafe": "カフェ",
-    "bakery": "ベーカリー",
-}
-
-SUBGENRE_KEYWORDS = {
-    "ショットバー": ["shot", "ショット"],
-    "ダイニングバー": ["dining", "ダイニング"],
-    "ワインバー": ["wine", "ワイン"],
-    "スポーツバー": ["sports", "スポーツ"],
-    "居酒屋": ["izakaya", "居酒屋"],
-    "焼鳥": ["yakitori", "焼き鳥", "焼鳥"],
-    "イタリアン": ["italian", "イタリアン"],
-}
-
-FEATURE_KEYWORDS = {
-    "個室": ["個室", "private"],
-    "喫煙": ["喫煙", "smoking"],
-    "ダーツ": ["ダーツ", "darts"],
-    "カラオケ": ["カラオケ", "karaoke"],
-    "テラス": ["テラス", "terrace"],
-}
-
+# Google Places の固定enum値なので、業種に関わらず共通（設定ファイル化しない）
 PRICE_MAP = {
     "PRICE_LEVEL_FREE": "無料",
     "PRICE_LEVEL_INEXPENSIVE": "￥1,000未満",
@@ -63,8 +47,6 @@ PRICE_MAP = {
     "PRICE_LEVEL_VERY_EXPENSIVE": "￥4,000以上",
 }
 
-WEEKDAYS_JA = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]
-
 
 def output_columns(origin_label: str) -> List[str]:
     return [
@@ -72,6 +54,8 @@ def output_columns(origin_label: str) -> List[str]:
         "ジャンル",
         "サブジャンル",
         "住所",
+        "緯度",
+        "経度",
         f"{origin_label}からの距離(m)",
         "Google評価",
         "口コミ件数",
@@ -85,6 +69,9 @@ def output_columns(origin_label: str) -> List[str]:
         "競合度",
         "ターゲット",
         "備考",
+        "拠点住所",
+        "拠点緯度",
+        "拠点経度",
     ]
 
 
@@ -101,11 +88,21 @@ class PlaceSummary:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Google Places API (New) -> Excel exporter")
+    parser = argparse.ArgumentParser(description="Google Places API (New) -> Excel/CSV exporter")
+    parser.add_argument(
+        "--config",
+        default=str(DEFAULT_CONFIG_PATH),
+        help="収集プロファイル（検索キーワード・ジャンル判定辞書）のTOMLファイルパス",
+    )
     parser.add_argument(
         "--address",
-        default="大阪府淀川市西中島3丁目",
-        help="検索基点の住所 (デフォルト: 大阪府淀川市西中島3丁目)",
+        default=None,
+        help="検索基点の住所（未指定時は設定ファイルのdefault_addressを使用）",
+    )
+    parser.add_argument(
+        "--label",
+        default=None,
+        help="出力列・ファイル名に使う拠点ラベル（未指定時は--addressの値をそのまま使用）",
     )
     parser.add_argument(
         "--radius",
@@ -201,8 +198,7 @@ def _sub_centers(lat: float, lng: float, radius: int) -> List[Tuple[float, float
     ]
 
 
-def fetch_nearby_places(lat: float, lng: float, radius: int, api_key: str) -> Dict[str, PlaceSummary]:
-    keywords = ["bar", "居酒屋", "焼き鳥", "イタリアン", "ダイニング", "スナック", "和食", "カフェ", "レストラン", "ラーメン"]
+def fetch_nearby_places(lat: float, lng: float, radius: int, api_key: str, keywords: List[str]) -> Dict[str, PlaceSummary]:
     places: Dict[str, PlaceSummary] = {}
     centers = _sub_centers(lat, lng, radius)
 
@@ -264,7 +260,7 @@ def fetch_nearby_places(lat: float, lng: float, radius: int, api_key: str) -> Di
                 page_token = data.get("nextPageToken")
                 if not page_token:
                     break
-                time.sleep(1.5)  # ページネーション時のウェイト
+                time.sleep(1.5)
 
     return places
 
@@ -314,32 +310,35 @@ def fetch_all_place_details(place_ids: List[str], api_key: str, workers: int) ->
     return details_map
 
 
-def infer_genre(types: List[str], name: str) -> str:
+def infer_genre(types: List[str], name: str, config: CollectorConfig) -> str:
     for t in types:
-        if t in GENRE_MAP:
-            return GENRE_MAP[t]
+        if t in config.genre_map:
+            return config.genre_map[t]
 
     n = name.lower()
-    if "居酒屋" in name:
-        return "居酒屋"
-    if "焼鳥" in name or "焼き鳥" in name:
-        return "焼鳥"
-    if "bar" in n:
-        return "BAR"
-    if "イタリアン" in name:
-        return "イタリアン"
+    for needle, genre in config.genre_name_fallback.items():
+        if needle.lower() in n or needle in name:
+            return genre
     return "その他"
 
 
-def infer_subgenre(name: str, types: List[str]) -> str:
+def infer_subgenre(name: str, types: List[str], config: CollectorConfig) -> str:
     text = f"{name} {' '.join(types)}".lower()
-    found = [label for label, keys in SUBGENRE_KEYWORDS.items() if any(k.lower() in text for k in keys)]
+    found = [
+        label
+        for label, keys in config.subgenre_keywords.items()
+        if any(k.lower() in text for k in keys)
+    ]
     return " / ".join(found) if found else ""
 
 
-def infer_features(name: str, weekday_text: List[str], reviews_text: str) -> str:
+def infer_features(name: str, weekday_text: List[str], reviews_text: str, config: CollectorConfig) -> str:
     corpus = f"{name} {' '.join(weekday_text)} {reviews_text}".lower()
-    feats = [label for label, keys in FEATURE_KEYWORDS.items() if any(k.lower() in corpus for k in keys)]
+    feats = [
+        label
+        for label, keys in config.feature_keywords.items()
+        if any(k.lower() in corpus for k in keys)
+    ]
     return "・".join(feats)
 
 
@@ -360,7 +359,7 @@ def infer_late_night(weekday_text: List[str]) -> str:
     return "×"
 
 
-def infer_competitiveness(distance_m: int, rating: Optional[float], reviews: Optional[int], genre: str) -> str:
+def infer_competitiveness(distance_m: int, rating: Optional[float], reviews: Optional[int], genre: str, config: CollectorConfig) -> str:
     score = 0
     if distance_m <= 300:
         score += 2
@@ -377,7 +376,7 @@ def infer_competitiveness(distance_m: int, rating: Optional[float], reviews: Opt
     elif reviews and reviews >= 30:
         score += 1
 
-    if genre == "BAR":
+    if genre in config.salaryman_genres:
         score += 1
 
     if score >= 5:
@@ -387,11 +386,11 @@ def infer_competitiveness(distance_m: int, rating: Optional[float], reviews: Opt
     return "低"
 
 
-def infer_target(genre: str, price_text: str, late_night: str) -> str:
+def infer_target(genre: str, price_text: str, late_night: str, config: CollectorConfig) -> str:
     targets: List[str] = []
-    if genre in {"BAR", "居酒屋"}:
+    if genre in config.salaryman_genres:
         targets.append("サラリーマン")
-    if genre in {"イタリアン", "カフェ"}:
+    if genre in config.women_genres:
         targets.append("女性")
     if "￥2,000" in price_text or "￥4,000" in price_text:
         targets.append("デート/会食")
@@ -404,11 +403,14 @@ def infer_target(genre: str, price_text: str, late_night: str) -> str:
 
 def build_rows(
     origin_label: str,
+    origin_address: str,
     origin_lat: float,
     origin_lng: float,
     places: Dict[str, PlaceSummary],
     api_key: str,
     detail_workers: int,
+    config: CollectorConfig,
+    max_radius: int = 1000,
 ) -> List[Dict[str, object]]:
     rows: List[Dict[str, object]] = []
     details_map = fetch_all_place_details(
@@ -418,6 +420,11 @@ def build_rows(
     )
 
     for p in places.values():
+        distance_m = haversine_m(origin_lat, origin_lng, p.lat, p.lng)
+        # 指定半径より外の店舗を除外
+        if distance_m > max_radius:
+            continue
+
         details = details_map.get(p.place_id, {})
         types_val = details.get("types")
         types = types_val if isinstance(types_val, list) else p.types
@@ -446,14 +453,13 @@ def build_rows(
         summary = details.get("editorialSummary", {})
         review_text = summary.get("text", "") if isinstance(summary, dict) else ""
 
-        distance_m = haversine_m(origin_lat, origin_lng, p.lat, p.lng)
-        genre = infer_genre(types, name)
-        subgenre = infer_subgenre(name, types)
+        genre = infer_genre(types, name, config)
+        subgenre = infer_subgenre(name, types, config)
         closed_day = infer_closed_day(weekday_text)
         late_night = infer_late_night(weekday_text)
-        features = infer_features(name, weekday_text, review_text)
-        competitiveness = infer_competitiveness(distance_m, rating, reviews, genre)
-        target = infer_target(genre, price_text, late_night)
+        features = infer_features(name, weekday_text, review_text, config)
+        competitiveness = infer_competitiveness(distance_m, rating, reviews, genre, config)
+        target = infer_target(genre, price_text, late_night, config)
 
         rows.append(
             {
@@ -461,6 +467,8 @@ def build_rows(
                 "ジャンル": genre,
                 "サブジャンル": subgenre,
                 "住所": address,
+                "緯度": p.lat,
+                "経度": p.lng,
                 f"{origin_label}からの距離(m)": distance_m,
                 "Google評価": rating,
                 "口コミ件数": reviews,
@@ -474,6 +482,9 @@ def build_rows(
                 "競合度": competitiveness,
                 "ターゲット": target,
                 "備考": "",
+                "拠点住所": origin_address,
+                "拠点緯度": origin_lat,
+                "拠点経度": origin_lng,
             }
         )
 
@@ -486,28 +497,37 @@ def build_rows(
     return sorted(rows, key=sort_distance)
 
 
-def normalize_origin_label(address: str) -> str:
-    if "西中島3丁目" in address:
-        return "西中島3丁目"
-    return address
-
-
 def main() -> None:
     args = parse_args()
+    config = load_config(args.config)
     api_key = get_api_key()
 
-    print(f"[INFO] 住所をジオコーディング中: {args.address}")
-    lat, lng, formatted = geocode_address(args.address, api_key)
-    origin_label = normalize_origin_label(args.address)
+    address = args.address or config.default_address
+    if not address:
+        raise RuntimeError("--address が未指定で、設定ファイルにも default_address がありません。")
+    origin_label = args.label or address
+
+    print(f"[INFO] 住所をジオコーディング中: {address}")
+    lat, lng, formatted = geocode_address(address, api_key)
     print(f"[INFO] 基点座標: {lat:.6f}, {lng:.6f} ({formatted})")
 
-    print(f"[INFO] Places API (New) 実行中: radius={args.radius}m")
-    places = fetch_nearby_places(lat, lng, args.radius, api_key)
+    print(f"[INFO] Places API (New) 実行中: radius={args.radius}m, keywords={config.keywords}")
+    places = fetch_nearby_places(lat, lng, args.radius, api_key, config.keywords)
     if not places:
         raise RuntimeError("検索結果が0件でした。条件を見直してください。")
 
     print(f"[INFO] 詳細取得中: {len(places)}件")
-    rows = build_rows(origin_label, lat, lng, places, api_key, args.detail_workers)
+    rows = build_rows(
+        origin_label,
+        formatted,
+        lat,
+        lng,
+        places,
+        api_key,
+        args.detail_workers,
+        config,
+        max_radius=args.radius,
+    )
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     output = args.output or f"places_{origin_label}_{args.radius}m_{ts}.xlsx"
@@ -524,15 +544,8 @@ def main() -> None:
     csv_dir.mkdir(exist_ok=True)
     csv_path = csv_dir / "places.csv"
     df.to_csv(csv_path, index=False, encoding="utf-8-sig")
-    print(f"[DONE] CSV出力完了: {csv_path} (Community Cloud配布用)")
+    print(f"[DONE] CSV出力完了: {csv_path} (viewer配布用)")
 
 
 if __name__ == "__main__":
     main()
-    
-"""
-with open('google_places_export_new.py', 'w', encoding='utf-8') as f:
-    f.write(script_content)
-
-print("Saved google_places_export_new.py successfully!")
-"""
