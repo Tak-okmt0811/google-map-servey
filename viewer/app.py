@@ -2,14 +2,13 @@
 """Streamlit viewer for competitor analysis exports.
 
 このアプリはGoogle APIを一切呼び出しません。collector/export.py が事前に生成した
-CSV/Excel（緯度・経度・拠点座標を含む）を読み込んで表示するだけです。
-APIキーは不要で、公開デプロイ・exe配布のどちらでも安全に配布できます。
+CSV/Excel（緯度・経度・拠点座標を含む）、またはブラウザからアップロードされたファイルを
+読み込んで表示するだけです。APIキーは不要で、公開デプロイしても安全です。
 """
 
 from __future__ import annotations
 
 import math
-import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -18,15 +17,10 @@ import plotly.express as px
 import pydeck as pdk
 import streamlit as st
 
-# PyInstallerでexe化した場合、実行ファイルと同じ場所を基準にする。
-# 通常のstreamlit run実行時はこのスクリプトの場所を基準にする。
-if getattr(sys, "frozen", False):
-    APP_DIR = Path(sys.executable).resolve().parent
-else:
-    APP_DIR = Path(__file__).resolve().parent
+APP_DIR = Path(__file__).resolve().parent
 
-# ファイル探索対象: input/ を最優先、次にアプリと同階層、最後にdata/（開発時のデフォルト運用）
-SEARCH_DIRS = [APP_DIR / "input", APP_DIR, APP_DIR / "data"]
+# ファイル探索対象: アプリと同階層、次にdata/（開発時のデフォルト運用・サンプルデータ格納先）
+SEARCH_DIRS = [APP_DIR, APP_DIR / "data"]
 
 
 def find_distance_col(df: pd.DataFrame) -> Optional[str]:

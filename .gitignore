@@ -11,12 +11,5 @@ __pycache__/
 *.csv
 !viewer/data/sample_places.csv
 
-# viewerのexe配布で使うローカル入力フォルダ（実データが置かれる想定）
-input/
-
 # 実際の調査エリアなど非公開情報を含むローカル限定の収集プロファイル
 collector/configs/*.local.toml
-
-# PyInstallerのビルド生成物
-build/
-dist/

@@ -4,7 +4,7 @@ Google Places APIを使って周辺店舗を収集し、Streamlitで競合マッ
 
 `collector`（データ収集・実行する人自身のAPIキーを使用）と `viewer`（既存データの表示のみ・
 APIキー不要）を明確に分離しています。**viewerは実行時にGoogle APIを一切呼び出しません。**
-クライアント向けexe配布や一般公開の際にも、あなたのAPIキー・アカウントが使われることはありません。
+一般公開しても、あなたのAPIキー・アカウントが使われることはありません。
 
 このリポジトリは丸ごと公開しています。`viewer/app.py`のデモは架空データで動いていますが、
 `collector`をcloneして**ご自身のGoogle Maps Platform APIキー**で実行すればExcelが出力でき、
@@ -23,10 +23,8 @@ collector/                # コードは公開・実行は各自のAPIキー(.en
 └── configs/
     └── bar_izakaya.toml    # 検索キーワード・ジャンル判定辞書などの設定例
 
-viewer/                   # APIキー不要・公開/exe配布可能
+viewer/                   # APIキー不要・公開デプロイ可能
 ├── app.py                 # Streamlitダッシュボード本体
-├── launcher.py             # exe化用の起動エントリポイント
-├── build_exe.spec          # PyInstaller用ビルド設定（Windows向け）
 └── data/
     └── sample_places.csv   # 公開ポートフォリオ用のダミーデータ（架空の店舗）
 
@@ -82,6 +80,12 @@ uv run python -m collector.export
 `collector/configs/bar_izakaya.toml` をコピーして、検索キーワード・ジャンル判定辞書・
 サブジャンル/特徴キーワードを書き換えれば、飲食店以外の業種にも流用できます。
 
+```bash
+cp collector/configs/bar_izakaya.toml collector/configs/my_profile.toml
+# my_profile.toml を編集後
+uv run python -m collector.export --config collector/configs/my_profile.toml --address "..."
+```
+
 ### 実際の調査エリアをローカルだけで保持する
 
 クライアント案件など、実際の調査対象エリアをリポジトリに残したくない場合は、
@@ -93,16 +97,10 @@ cp collector/configs/bar_izakaya.toml collector/configs/bar_izakaya.local.toml
 uv run python -m collector.export --config collector/configs/bar_izakaya.local.toml
 ```
 
-```bash
-cp collector/configs/bar_izakaya.toml collector/configs/my_profile.toml
-# my_profile.toml を編集後
-uv run python -m collector.export --config collector/configs/my_profile.toml --address "..."
-```
-
 ### 出力ファイル
 
-- `places_<ラベル>_<半径>m_<日時>.xlsx`（手元確認用）
-- `data/places.csv`（緯度・経度・拠点座標を含む。viewer/exe配布用の実データ）
+- `places_<ラベル>_<半径>m_<日時>.xlsx`（手元確認用。緯度・経度・拠点座標を含む）
+- `data/places.csv`（同内容のCSV。viewerへのアップロード用）
 
 いずれも `.gitignore` によりGit管理対象外です。実データをリポジトリにcommitしないでください。
 
@@ -114,133 +112,52 @@ uv run python -m collector.export --config collector/configs/my_profile.toml --a
 uv run streamlit run viewer/app.py
 ```
 
-ブラウザで `http://localhost:8501` が開きます。次の場所を自動的にスキャンし、
-見つかったCSV/Excelをサイドバーの一覧から選べます。
+ブラウザで `http://localhost:8501` が開きます。サイドバーの「調査結果ファイルをアップロード」
+から `collector` の出力（CSV/Excel）を選ぶと、その場で読み込んで表示されます
+（アップロードされたファイルはディスクに保存されず、ブラウザセッション内のメモリでのみ扱われます）。
 
-1. `viewer/input/`（最優先）
-2. `viewer/`（app.pyと同階層）
-3. `viewer/data/`（開発時のデフォルト。`sample_places.csv` が入っています）
-
-`collector`で生成した `data/places.csv` を表示したい場合は、`viewer/input/` にコピーするか、
-サイドバーの「または直接パスを指定」に絶対パスを入力してください。
+アップロードしなかった場合は、`viewer/`直下または`viewer/data/`にあるCSV/Excelを自動検出します
+（`viewer/data/sample_places.csv` が既定のサンプルデータとして入っています）。
 
 ---
 
-## 成果物① Windowsクライアント向けexe化
+## デプロイ（Streamlit Community Cloud・無料）
 
-`viewer/` だけをexe化して配布します。**APIキーは一切含まれず、実行時も通信しません。**
+`viewer/app.py`をクライアント・ポートフォリオ閲覧者向けに公開します。APIキーは一切不要で、
+Secretsに何も登録しなくてもそのまま動きます。
 
-クライアントへの配布は **`CompetitorDashboardSetup.exe`（インストーラ）を渡すのが基本**です。
-zip解凍もフォルダ管理も不要で、「ダブルクリック → インストールウィザード → デスクトップに
-アイコン」という、非エンジニアに馴染みのある体験になります。
+1. このリポジトリをGitHubにpush（公開リポジトリでも問題ありません。理由は下記
+   「セキュリティに関する注意」を参照）。
+2. [share.streamlit.io](https://share.streamlit.io) にGitHubアカウントでログイン。
+3. 「Create app」→ 対象リポジトリ・ブランチ（`main`）を選択し、
+   **Main file path に `viewer/app.py`** を指定してデプロイ。
+4. Secretsの設定は不要（空のまま）。viewerはGoogle APIを一切呼び出さないため。
+5. 依存関係はリポジトリ直下の `uv.lock`（`pyproject.toml`）が自動的に使われます。
+   もし依存解決でエラーが出る場合は、リポジトリ直下に以下のような`requirements.txt`を
+   追加してください（Community Cloudはこちらを優先して使うようになります）。
 
-### インストーラの中身・挙動
+   ```
+   streamlit>=1.61.1
+   pandas>=3.0.5
+   plotly>=6.9.0
+   pydeck>=0.9.3
+   openpyxl>=3.1.5
+   ```
 
-- インストール先は `%LOCALAPPDATA%\CompetitorDashboard`（ユーザー単位）。管理者権限や
-  UACプロンプトは不要。
-- インストール時に空の `input` フォルダも一緒に作成される（README代わりの`readme.txt`入り）。
-  `collector`で生成した最新の `places.csv`（または`.xlsx`）をこのフォルダに置けば、
-  アプリ起動時に自動検出される。
-- 完了画面の「起動する」にチェックが入った状態でインストールを終えると、そのまま
-  ブラウザでダッシュボードが開く。
-- スタートメニュー・デスクトップ（任意）にアイコンが作成され、Windowsの
-  「アプリと機能」から通常のアプリと同じようにアンインストールできる
-  （アンインストール時、ユーザーが`input`に追加したファイルは削除されない）。
-- コマンドプロンプトは表示されず、初回起動時のメールアドレス入力を求められることもない
-  （`~/.streamlit/credentials.toml` を起動時に自動生成して回避している）。
+6. デプロイ完了後に発行されるURL（`https://<任意名>.streamlit.app`）をポートフォリオに掲載。
 
-**アプリの終了方法**: コンソールを表示しない設計のため、ブラウザタブを閉じただけでは
-裏でプロセスが起動したままになる。完全に終了させるには、タスクマネージャーで
-`competitor-dashboard.exe` を終了するか、PCを再起動する必要がある。この点は
-将来的にpywebviewベースの実装に切り替えることでネイティブウィンドウの
-「閉じるボタン」で解決できる想定（未着手）。
+### クライアントへの渡し方
 
-### ビルド（GitHub Actionsで自動化・推奨）
+`collector`で出力したExcel/CSVをメールやチャットでクライアントに送り、
+上記でデプロイした公開URLを開いてサイドバーからアップロードしてもらうだけです。
+インストールもzip解凍も不要で、ブラウザだけで完結します。
 
-Windows機を用意しなくても、[.github/workflows/build-exe.yml](.github/workflows/build-exe.yml) が
-GitHub上のWindows runnerでPyInstaller実行 → Inno Setupインストーラ生成まで自動的に行います。
+### 一般公開デモとしての使い方
 
-**タグをpushしてリリースとして公開する場合（クライアント配布はこちら）**
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-`v` から始まるタグをpushすると、ビルド後に自動でGitHub Releaseが作成され、
-**`CompetitorDashboardSetup.exe`（インストーラ、zipなし）と `competitor-dashboard.exe`
-（生の単一exe、上級者向け）の両方が添付**されます。GitHub Releaseの添付ファイルは
-zip化されずに公開されるため、クライアントは解凍が一切不要です。クライアントには
-そのReleaseページのダウンロードリンクと`CompetitorDashboardSetup.exe`を使うよう案内してください。
-
-タグのバージョン番号（`v1.0.0`の`1.0.0`部分）がそのままインストーラのバージョンとして
-使われます。
-
-**手動実行する場合（動作確認用）**
-
-1. GitHubリポジトリの `Actions` タブ → `Build Windows exe` を選択
-2. `Run workflow` ボタンを押す（`workflow_dispatch`）
-3. 実行が終わったら、そのRunのページ下部 `Artifacts` から `CompetitorDashboardSetup`
-   （インストーラ）または `competitor-dashboard-windows`（生exe、上級者向け）をダウンロード。
-   いずれもzipを1回解凍すればexeが出てくる（Artifactsのダウンロードは仕組み上GitHub側で
-   必ず1回zip化されるため、これ以上は減らせない）。この場合バージョンは`0.0.0-dev`になる。
-
-ビルド生成物（`dist/`, `build/`, `installer/output/`）はリポジトリにcommitしません。
-常にActions側で都度ビルドし、Artifacts/ReleasesからDLする運用にしてください。
-
-### ローカル（Windows機）でビルドする場合
-
-PyInstallerはクロスコンパイルできないため、Windows機で実行する必要があります。
-
-```bash
-uv sync --group dev
-uv run pyinstaller viewer/build_exe.spec
-```
-
-出力: `dist/competitor-dashboard.exe`（onefile方式の単一ファイル。`_internal`のような
-付随フォルダは生成されない）。続けて[Inno Setup](https://jrsoftware.org/isinfo.php)を
-インストールした上で、以下でインストーラ化できる。
-
-```bash
-ISCC.exe /DMyAppVersion=1.0.0 installer\setup.iss
-```
-
-出力: `installer\output\CompetitorDashboardSetup.exe`
-
-macOS上ではmacOS版バイナリとしてビルド・動作確認は可能ですが、Windows向け配布物としては
-使えません（実際のexe/インストーラ生成は必ずWindows環境で行ってください）。onefile方式は
-起動のたびに一時フォルダへ展開するため、初回表示まで数秒かかる点にも留意してください。
-
----
-
-## 成果物② ポートフォリオ公開（無料ホスティング）
-
-このリポジトリ自体（`collector/` + `viewer/`）をそのまま公開し、
-Streamlit Community Cloud（無料）や Hugging Face Spaces（無料）に`viewer/app.py`をデプロイします。
-
-- デプロイするアプリ自体（`viewer/app.py`）が表示するのは架空データ
-  （`viewer/data/sample_places.csv`）です。デプロイ設定のSecretsには**何も登録しない**でください。
-  viewerはAPIキーを参照しないため不要です。
-- `collector/`（APIキーを使うExcel出力プログラム）は**意図的に同じ公開リポジトリに含めています**。
-  訪問者は自分のGoogle Maps Platform APIキーを取得すれば、`collector`をcloneして実行し、
-  自分の欲しいエリアのExcelを出力できます。あなたのAPIキー・アカウントは一切使われません
-  （`collector`はcloneした人自身の`.env`を読むだけで、リポジトリにキーは含まれません）。
-- 出力したExcel/CSVは、公開しているダッシュボードのサイドバー「調査結果ファイルをアップロード」
-  からブラウザ経由でその場読み込みできます（サーバーには保存されず、アップロードした
-  ブラウザセッション内でのみ表示されます）。これにより、訪問者は**ダミーデータではなく
-  自分の地域の実データ**でダッシュボードの動作を確認できます。
-- クライアント向けの差別化ポイントは「Excel出力の手間を代行すること」です。一般公開版は
-  セルフサービス（自分のAPIキーが必要）、クライアントには`collector`実行済みのExcelを
-  そのまま渡す（またはexeに同梱して渡す）、という住み分けになります。
-
-### デプロイ手順（Streamlit Community Cloudの例）
-
-1. このリポジトリをGitHubにpush。
-2. [share.streamlit.io](https://share.streamlit.io) でリポジトリを接続し、
-   メインファイルパスに `viewer/app.py` を指定。
-3. Secretsは設定不要（空のまま）。
-4. デプロイ後のURLをポートフォリオに掲載。README上部に「自分のAPIキーで試す」手順
-   （STEP 1・STEP 2）へのリンクを添えると、セルフサービスの動線が伝わりやすい。
+ポートフォリオ訪問者は、`collector`をcloneして自分のGoogle Maps Platform APIキーで
+Excelを出力し、同じ公開URLにアップロードすれば、架空のサンプルデータではなく
+自分の指定したエリアの実データで動作を確認できます。クライアントに対する差別化は
+「Excel出力（APIキー取得・実行）の手間をこちらが代行すること」です。
 
 ---
 
