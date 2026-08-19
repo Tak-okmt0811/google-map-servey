@@ -125,54 +125,37 @@ uv run streamlit run viewer/app.py
 
 `viewer/` だけをexe化して配布します。**APIキーは一切含まれず、実行時も通信しません。**
 
-### ビルド（Windows環境で実行）
+クライアントへの配布は **`CompetitorDashboardSetup.exe`（インストーラ）を渡すのが基本**です。
+zip解凍もフォルダ管理も不要で、「ダブルクリック → インストールウィザード → デスクトップに
+アイコン」という、非エンジニアに馴染みのある体験になります。
 
-PyInstallerはクロスコンパイルできないため、**Windows機（または Windows GitHub Actions runner）で
-ビルドしてください。**
+### インストーラの中身・挙動
 
-```bash
-uv sync --group dev
-uv run pyinstaller viewer/build_exe.spec
-```
-
-出力: `dist/competitor-dashboard.exe`（onefile方式の単一ファイル。`_internal`のような
-付随フォルダは生成されない）
-
-### クライアントへの渡し方
-
-1. `competitor-dashboard.exe` を1つだけ渡す（zip解凍やフォルダ管理は不要）。
-2. `collector`で生成した最新の `places.csv`（または`.xlsx`）を、exeと同じフォルダか
-   `input/` サブフォルダに配置してもらう。
-3. `competitor-dashboard.exe` をダブルクリックするとブラウザでダッシュボードが自動的に開く。
-   コマンドプロンプトは表示されず、初回起動時のメールアドレス入力を求められることもない
-   （`~/.streamlit/credentials.toml` を起動時に自動生成して回避している）。
-4. 調査結果を更新する場合は、`input/` フォルダの中身を新しいファイルに差し替えるだけでよい
-   （exeの再ビルドは不要）。
+- インストール先は `%LOCALAPPDATA%\CompetitorDashboard`（ユーザー単位）。管理者権限や
+  UACプロンプトは不要。
+- インストール時に空の `input` フォルダも一緒に作成される（README代わりの`readme.txt`入り）。
+  `collector`で生成した最新の `places.csv`（または`.xlsx`）をこのフォルダに置けば、
+  アプリ起動時に自動検出される。
+- 完了画面の「起動する」にチェックが入った状態でインストールを終えると、そのまま
+  ブラウザでダッシュボードが開く。
+- スタートメニュー・デスクトップ（任意）にアイコンが作成され、Windowsの
+  「アプリと機能」から通常のアプリと同じようにアンインストールできる
+  （アンインストール時、ユーザーが`input`に追加したファイルは削除されない）。
+- コマンドプロンプトは表示されず、初回起動時のメールアドレス入力を求められることもない
+  （`~/.streamlit/credentials.toml` を起動時に自動生成して回避している）。
 
 **アプリの終了方法**: コンソールを表示しない設計のため、ブラウザタブを閉じただけでは
 裏でプロセスが起動したままになる。完全に終了させるには、タスクマネージャーで
 `competitor-dashboard.exe` を終了するか、PCを再起動する必要がある。この点は
-将来的にpywebviewベースの実装（後述）に切り替えることでネイティブウィンドウの
-「閉じるボタン」で解決できる想定。
+将来的にpywebviewベースの実装に切り替えることでネイティブウィンドウの
+「閉じるボタン」で解決できる想定（未着手）。
 
-macOS上ではmacOS版バイナリとしてビルド・動作確認は可能ですが、Windows向け配布物としては
-使えません（実際のexe生成は必ずWindows環境で行ってください）。onefile方式は起動のたびに
-一時フォルダへ展開するため、初回表示まで数秒かかる点にも留意してください。
-
-### ビルド（GitHub Actionsで自動化する場合）
+### ビルド（GitHub Actionsで自動化・推奨）
 
 Windows機を用意しなくても、[.github/workflows/build-exe.yml](.github/workflows/build-exe.yml) が
-GitHub上のWindows runnerで自動的にビルドします。
+GitHub上のWindows runnerでPyInstaller実行 → Inno Setupインストーラ生成まで自動的に行います。
 
-**手動実行する場合**
-
-1. GitHubリポジトリの `Actions` タブ → `Build Windows exe` を選択
-2. `Run workflow` ボタンを押す（`workflow_dispatch`）
-3. 実行が終わったら、そのRunのページ下部 `Artifacts` から
-   `competitor-dashboard-windows` をダウンロード（zipを1回解凍すると`competitor-dashboard.exe`が出てくる。
-   Artifactsのダウンロードは仕組み上GitHub側で必ず1回zip化されるため、これ以上は減らせない）
-
-**タグをpushしてリリースとして公開する場合（クライアント配布はこちらを推奨）**
+**タグをpushしてリリースとして公開する場合（クライアント配布はこちら）**
 
 ```bash
 git tag v1.0.0
@@ -180,13 +163,48 @@ git push origin v1.0.0
 ```
 
 `v` から始まるタグをpushすると、ビルド後に自動でGitHub Releaseが作成され、
-**zipなしの`competitor-dashboard.exe`がそのまま添付**されます。GitHub Releaseの添付ファイルは
-zip化されずに公開されるため、クライアントは解凍が一切不要で、ダウンロードした
-exeファイルをそのまま実行できます。クライアントにはそのReleaseページの
-ダウンロードリンクを共有してください。
+**`CompetitorDashboardSetup.exe`（インストーラ、zipなし）と `competitor-dashboard.exe`
+（生の単一exe、上級者向け）の両方が添付**されます。GitHub Releaseの添付ファイルは
+zip化されずに公開されるため、クライアントは解凍が一切不要です。クライアントには
+そのReleaseページのダウンロードリンクと`CompetitorDashboardSetup.exe`を使うよう案内してください。
 
-ビルド生成物（`dist/`, `build/`）はリポジトリにcommitしません。常にActions側で
-都度ビルドし、Artifacts/ReleasesからDLする運用にしてください。
+タグのバージョン番号（`v1.0.0`の`1.0.0`部分）がそのままインストーラのバージョンとして
+使われます。
+
+**手動実行する場合（動作確認用）**
+
+1. GitHubリポジトリの `Actions` タブ → `Build Windows exe` を選択
+2. `Run workflow` ボタンを押す（`workflow_dispatch`）
+3. 実行が終わったら、そのRunのページ下部 `Artifacts` から `CompetitorDashboardSetup`
+   （インストーラ）または `competitor-dashboard-windows`（生exe、上級者向け）をダウンロード。
+   いずれもzipを1回解凍すればexeが出てくる（Artifactsのダウンロードは仕組み上GitHub側で
+   必ず1回zip化されるため、これ以上は減らせない）。この場合バージョンは`0.0.0-dev`になる。
+
+ビルド生成物（`dist/`, `build/`, `installer/output/`）はリポジトリにcommitしません。
+常にActions側で都度ビルドし、Artifacts/ReleasesからDLする運用にしてください。
+
+### ローカル（Windows機）でビルドする場合
+
+PyInstallerはクロスコンパイルできないため、Windows機で実行する必要があります。
+
+```bash
+uv sync --group dev
+uv run pyinstaller viewer/build_exe.spec
+```
+
+出力: `dist/competitor-dashboard.exe`（onefile方式の単一ファイル。`_internal`のような
+付随フォルダは生成されない）。続けて[Inno Setup](https://jrsoftware.org/isinfo.php)を
+インストールした上で、以下でインストーラ化できる。
+
+```bash
+ISCC.exe /DMyAppVersion=1.0.0 installer\setup.iss
+```
+
+出力: `installer\output\CompetitorDashboardSetup.exe`
+
+macOS上ではmacOS版バイナリとしてビルド・動作確認は可能ですが、Windows向け配布物としては
+使えません（実際のexe/インストーラ生成は必ずWindows環境で行ってください）。onefile方式は
+起動のたびに一時フォルダへ展開するため、初回表示まで数秒かかる点にも留意してください。
 
 ---
 
