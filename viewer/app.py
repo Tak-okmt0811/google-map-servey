@@ -192,18 +192,29 @@ st.caption("距離・Google評価・口コミ件数を軸に競争圧を可視�
 
 with st.sidebar:
     st.header("設定")
+    uploaded_file = st.file_uploader(
+        "調査結果ファイルをアップロード（CSV/Excel）",
+        type=["csv", "xlsx"],
+        help=(
+            "アップロードしたファイルはこのブラウザセッション内でのみ使用され、"
+            "サーバーに保存されません。collector/export.py の出力をそのまま使えます。"
+        ),
+    )
+
     export_files = list_export_files()
-    if export_files:
-        selected_file = st.selectbox("検出したファイル", export_files, index=0)
+    if uploaded_file is None:
+        if export_files:
+            selected_file = st.selectbox("または検出したファイルを使う", export_files, index=0)
+        else:
+            selected_file = ""
+            st.info(
+                "ファイルが自動検出されませんでした。上のアップローダーから、"
+                "collectorで出力したExcel/CSVを読み込んでください。"
+            )
+        manual_path = st.text_input("またはサーバー上のパスを直接指定（任意）", value="")
     else:
         selected_file = ""
-        st.warning(
-            "CSV/Excelファイルが見つかりません。\n\n"
-            f"次のいずれかに調査結果ファイルを置いてください:\n"
-            + "\n".join(f"- {d}" for d in SEARCH_DIRS)
-        )
-
-    manual_path = st.text_input("または直接パスを指定（任意）", value="")
+        manual_path = ""
 
     w_dist = st.slider("重み: 距離", min_value=0.0, max_value=1.0, value=0.40, step=0.05)
     w_rate = st.slider("重み: Google評価", min_value=0.0, max_value=1.0, value=0.35, step=0.05)
@@ -213,25 +224,36 @@ with st.sidebar:
     st.write("推奨: 距離40% / 評価35% / 口コミ25%")
 
 
+def read_dataframe(name: str, data) -> pd.DataFrame:
+    if str(name).lower().endswith(".csv"):
+        return pd.read_csv(data, encoding="utf-8-sig")
+    return pd.read_excel(data)
+
+
 @st.cache_data(show_spinner=False)
 def read_export_cached(path_str: str) -> pd.DataFrame:
-    if path_str.endswith(".csv"):
-        return pd.read_csv(path_str, encoding="utf-8-sig")
-    return pd.read_excel(path_str)
+    return read_dataframe(path_str, path_str)
 
 
-effective_path = manual_path.strip() or selected_file
-target_file = resolve_path(effective_path) if effective_path else Path("")
+if uploaded_file is not None:
+    try:
+        df_raw = read_dataframe(uploaded_file.name, uploaded_file)
+    except Exception as exc:  # pragma: no cover
+        st.error(f"ファイル読み込みに失敗しました: {exc}")
+        st.stop()
+else:
+    effective_path = manual_path.strip() or selected_file
+    target_file = resolve_path(effective_path) if effective_path else Path("")
 
-if not effective_path or not target_file.exists():
-    st.error("分析対象のファイルが見つかりません。サイドバーでファイルを選択・指定してください。")
-    st.stop()
+    if not effective_path or not target_file.exists():
+        st.error("分析対象のファイルが見つかりません。サイドバーでファイルをアップロード・選択・指定してください。")
+        st.stop()
 
-try:
-    df_raw = read_export_cached(str(target_file))
-except Exception as exc:  # pragma: no cover
-    st.error(f"ファイル読み込みに失敗しました: {exc}")
-    st.stop()
+    try:
+        df_raw = read_export_cached(str(target_file))
+    except Exception as exc:  # pragma: no cover
+        st.error(f"ファイル読み込みに失敗しました: {exc}")
+        st.stop()
 
 distance_col = find_distance_col(df_raw)
 if distance_col is None:

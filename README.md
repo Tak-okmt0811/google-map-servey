@@ -2,16 +2,21 @@
 
 Google Places APIを使って周辺店舗を収集し、Streamlitで競合マップを表示するツールです。
 
-`collector`（データ収集・自分のAPIキーを使用）と `viewer`（既存データの表示のみ・APIキー不要）を
-明確に分離しています。**viewerは実行時にGoogle APIを一切呼び出しません。** クライアント向けexe配布や
-一般公開の際にも、あなたのAPIキー・アカウントが使われることはありません。
+`collector`（データ収集・実行する人自身のAPIキーを使用）と `viewer`（既存データの表示のみ・
+APIキー不要）を明確に分離しています。**viewerは実行時にGoogle APIを一切呼び出しません。**
+クライアント向けexe配布や一般公開の際にも、あなたのAPIキー・アカウントが使われることはありません。
+
+このリポジトリは丸ごと公開しています。`viewer/app.py`のデモは架空データで動いていますが、
+`collector`をcloneして**ご自身のGoogle Maps Platform APIキー**で実行すればExcelが出力でき、
+それをデモのサイドバーからアップロードすると、ご自身のエリアの実データで動作を確認できます
+（詳しくは下記「STEP 1」「STEP 2」を参照）。
 
 ---
 
 ## 構成
 
 ```
-collector/                # 非公開・自分のPC(または管理者専用環境)でのみ実行
+collector/                # コードは公開・実行は各自のAPIキー(.env)で行う
 ├── export.py              # 周辺店舗をAPIで取得しExcel・CSVに出力するCLI
 ├── verify_one.py          # API疎通確認用（1件だけ取得するテスト）
 ├── config.py               # 収集プロファイル(TOML)の読み込み
@@ -55,7 +60,7 @@ GOOGLE_MAPS_API_KEY=あなたのAPIキー
 
 ---
 
-## STEP 1: 店舗データの取得（collector・非公開）
+## STEP 1: 店舗データの取得（collector・要APIキー）
 
 ```bash
 uv run python -m collector.export
@@ -210,29 +215,45 @@ macOS上ではmacOS版バイナリとしてビルド・動作確認は可能で�
 
 ## 成果物② ポートフォリオ公開（無料ホスティング）
 
-`viewer/`（+ `viewer/data/sample_places.csv`）だけを含む**公開用リポジトリ/ブランチ**を用意し、
-Streamlit Community Cloud（無料）や Hugging Face Spaces（無料）にデプロイします。
+このリポジトリ自体（`collector/` + `viewer/`）をそのまま公開し、
+Streamlit Community Cloud（無料）や Hugging Face Spaces（無料）に`viewer/app.py`をデプロイします。
 
-- 表示するのは架空データ（`viewer/data/sample_places.csv`）のみ。実在店舗の情報や
-  クライアントの実データは含めないでください。
-- デプロイ設定のSecretsには**何も登録しない**でください。viewerはAPIキーを参照しないため不要です。
-- リポジトリに `collector/` や `.env` を含めない（別リポジトリ、または `.gitignore` で除外）ことで、
-  あなたのAPIキーが公開経路に紛れ込むリスクをなくせます。
+- デプロイするアプリ自体（`viewer/app.py`）が表示するのは架空データ
+  （`viewer/data/sample_places.csv`）です。デプロイ設定のSecretsには**何も登録しない**でください。
+  viewerはAPIキーを参照しないため不要です。
+- `collector/`（APIキーを使うExcel出力プログラム）は**意図的に同じ公開リポジトリに含めています**。
+  訪問者は自分のGoogle Maps Platform APIキーを取得すれば、`collector`をcloneして実行し、
+  自分の欲しいエリアのExcelを出力できます。あなたのAPIキー・アカウントは一切使われません
+  （`collector`はcloneした人自身の`.env`を読むだけで、リポジトリにキーは含まれません）。
+- 出力したExcel/CSVは、公開しているダッシュボードのサイドバー「調査結果ファイルをアップロード」
+  からブラウザ経由でその場読み込みできます（サーバーには保存されず、アップロードした
+  ブラウザセッション内でのみ表示されます）。これにより、訪問者は**ダミーデータではなく
+  自分の地域の実データ**でダッシュボードの動作を確認できます。
+- クライアント向けの差別化ポイントは「Excel出力の手間を代行すること」です。一般公開版は
+  セルフサービス（自分のAPIキーが必要）、クライアントには`collector`実行済みのExcelを
+  そのまま渡す（またはexeに同梱して渡す）、という住み分けになります。
 
 ### デプロイ手順（Streamlit Community Cloudの例）
 
-1. `viewer/` を含む公開用リポジトリをGitHubにpush。
+1. このリポジトリをGitHubにpush。
 2. [share.streamlit.io](https://share.streamlit.io) でリポジトリを接続し、
    メインファイルパスに `viewer/app.py` を指定。
 3. Secretsは設定不要（空のまま）。
-4. デプロイ後のURLをポートフォリオに掲載。
+4. デプロイ後のURLをポートフォリオに掲載。README上部に「自分のAPIキーで試す」手順
+   （STEP 1・STEP 2）へのリンクを添えると、セルフサービスの動線が伝わりやすい。
 
 ---
 
 ## セキュリティに関する注意
 
 - `collector`（APIキーを使う処理）と `viewer`（表示のみ）はコード上完全に分離されています。
-  `viewer/app.py` はGoogle APIのURLやキー参照を一切含みません。
+  `viewer/app.py` はGoogle APIのURLやキー参照を一切含みません。両方とも同じ公開リポジトリに
+  含まれていますが、`collector`はcloneした人自身の`.env`（コミット対象外）を読むだけなので、
+  あなたのAPIキーが公開経路や他人の実行に紛れ込むことはありません。
+- `viewer/app.py`のファイルアップロード機能は、アップロードされたファイルをディスクに
+  保存せず、そのブラウザセッション内のメモリ上でのみ処理します。公開URLを知っていれば
+  誰でも同じ形式のファイルをアップロードして閲覧できる（クライアント専用ページにはならない）
+  点は把握した上で運用してください。
 - `.env` は `.gitignore` で除外されており、Git履歴上も一度もcommitされていないことを確認済みです。
   引き続きcommitしないよう注意してください。
 - `.gitignore` は `*.csv` を既定で除外しつつ、`viewer/data/sample_places.csv`（公開用ダミーデータ）
