@@ -135,19 +135,29 @@ uv sync --group dev
 uv run pyinstaller viewer/build_exe.spec
 ```
 
-出力: `dist/competitor-dashboard/` フォルダ一式（`competitor-dashboard.exe` を含む）
+出力: `dist/competitor-dashboard.exe`（onefile方式の単一ファイル。`_internal`のような
+付随フォルダは生成されない）
 
 ### クライアントへの渡し方
 
-1. `dist/competitor-dashboard/` フォルダをまるごと渡す（zip圧縮推奨）。
-2. `collector`で生成した最新の `places.csv`（または`.xlsx`）を、そのフォルダ直下か
+1. `competitor-dashboard.exe` を1つだけ渡す（zip解凍やフォルダ管理は不要）。
+2. `collector`で生成した最新の `places.csv`（または`.xlsx`）を、exeと同じフォルダか
    `input/` サブフォルダに配置してもらう。
-3. `competitor-dashboard.exe` をダブルクリックするとブラウザでダッシュボードが開く。
+3. `competitor-dashboard.exe` をダブルクリックするとブラウザでダッシュボードが自動的に開く。
+   コマンドプロンプトは表示されず、初回起動時のメールアドレス入力を求められることもない
+   （`~/.streamlit/credentials.toml` を起動時に自動生成して回避している）。
 4. 調査結果を更新する場合は、`input/` フォルダの中身を新しいファイルに差し替えるだけでよい
    （exeの再ビルドは不要）。
 
+**アプリの終了方法**: コンソールを表示しない設計のため、ブラウザタブを閉じただけでは
+裏でプロセスが起動したままになる。完全に終了させるには、タスクマネージャーで
+`competitor-dashboard.exe` を終了するか、PCを再起動する必要がある。この点は
+将来的にpywebviewベースの実装（後述）に切り替えることでネイティブウィンドウの
+「閉じるボタン」で解決できる想定。
+
 macOS上ではmacOS版バイナリとしてビルド・動作確認は可能ですが、Windows向け配布物としては
-使えません（実際のexe生成は必ずWindows環境で行ってください）。
+使えません（実際のexe生成は必ずWindows環境で行ってください）。onefile方式は起動のたびに
+一時フォルダへ展開するため、初回表示まで数秒かかる点にも留意してください。
 
 ### ビルド（GitHub Actionsで自動化する場合）
 
@@ -159,9 +169,10 @@ GitHub上のWindows runnerで自動的にビルドします。
 1. GitHubリポジトリの `Actions` タブ → `Build Windows exe` を選択
 2. `Run workflow` ボタンを押す（`workflow_dispatch`）
 3. 実行が終わったら、そのRunのページ下部 `Artifacts` から
-   `competitor-dashboard-windows` をダウンロード（zip、`dist/competitor-dashboard/` 一式を圧縮したもの）
+   `competitor-dashboard-windows` をダウンロード（zipを1回解凍すると`competitor-dashboard.exe`が出てくる。
+   Artifactsのダウンロードは仕組み上GitHub側で必ず1回zip化されるため、これ以上は減らせない）
 
-**タグをpushしてリリースとして公開する場合**
+**タグをpushしてリリースとして公開する場合（クライアント配布はこちらを推奨）**
 
 ```bash
 git tag v1.0.0
@@ -169,7 +180,10 @@ git push origin v1.0.0
 ```
 
 `v` から始まるタグをpushすると、ビルド後に自動でGitHub Releaseが作成され、
-zipが添付されます。クライアントには、そのReleaseページのダウンロードリンクを共有できます。
+**zipなしの`competitor-dashboard.exe`がそのまま添付**されます。GitHub Releaseの添付ファイルは
+zip化されずに公開されるため、クライアントは解凍が一切不要で、ダウンロードした
+exeファイルをそのまま実行できます。クライアントにはそのReleaseページの
+ダウンロードリンクを共有してください。
 
 ビルド生成物（`dist/`, `build/`）はリポジトリにcommitしません。常にActions側で
 都度ビルドし、Artifacts/ReleasesからDLする運用にしてください。

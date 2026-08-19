@@ -26,19 +26,20 @@ jobs:
       - name: Build exe with PyInstaller
         run: uv run pyinstaller viewer/build_exe.spec
 
-      - name: Zip build output
-        shell: pwsh
-        run: Compress-Archive -Path dist/competitor-dashboard/* -DestinationPath competitor-dashboard-windows.zip
-
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: competitor-dashboard-windows
-          path: competitor-dashboard-windows.zip
+          # onefileの単一exeをそのままアップロードする（事前zip禁止）。
+          # upload-artifactはダウンロード時に1回だけzip化するため、
+          # 自前でzip化したファイルを渡すと「zipの中にzip」になってしまう。
+          path: dist/competitor-dashboard.exe
           retention-days: 30
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: competitor-dashboard-windows.zip
+          # Releaseの添付ファイルはzip化されず生ファイルのまま公開されるため、
+          # クライアントはダウンロード後、解凍せずそのままexeを実行できる。
+          files: dist/competitor-dashboard.exe
