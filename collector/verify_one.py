@@ -10,8 +10,15 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 import requests
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from collector.usage import GEOCODING, PLACE_DETAILS, TEXT_SEARCH, UsageGuard  # noqa: E402
+
+# 無料枠ガード。料金区分は安全側（より上位の区分）として数える
+GUARD = UsageGuard()
 
 GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
 PLACES_SEARCH_TEXT_URL = "https://places.googleapis.com/v1/places:searchText"
@@ -46,6 +53,7 @@ def test_geocoding(address: str, api_key: str) -> tuple[float, float, str]:
     """1. Geocoding API のテスト"""
     print(f"\n--- [1/3] Geocoding API テスト: {address} ---")
     params = {"address": address, "language": "ja", "key": api_key}
+    GUARD.record(GEOCODING)
     res = requests.get(GEOCODE_URL, params=params, timeout=10)
     
     print(f"ステータスコード: {res.status_code}")
@@ -85,6 +93,7 @@ def test_places_search(lat: float, lng: float, radius: int, api_key: str) -> dic
         "languageCode": "ja",
     }
 
+    GUARD.record(TEXT_SEARCH)
     res = requests.post(PLACES_SEARCH_TEXT_URL, json=payload, headers=headers, timeout=10)
     print(f"ステータスコード: {res.status_code}")
     
@@ -116,6 +125,7 @@ def test_place_details(place_id: str, api_key: str) -> dict:
     }
     params = {"languageCode": "ja"}
 
+    GUARD.record(PLACE_DETAILS)
     res = requests.get(url, headers=headers, params=params, timeout=10)
     print(f"ステータスコード: {res.status_code}")
     

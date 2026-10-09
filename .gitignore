@@ -9,7 +9,9 @@ __pycache__/
 # 実データ（クライアント納品用など）はcommitしない。
 # 公開ポートフォリオ用のダミーデータのみ例外的にcommit対象にする。
 *.csv
-!viewer/data/sample_places.csv
 
 # 実際の調査エリアなど非公開情報を含むローカル限定の収集プロファイル
 collector/configs/*.local.toml
+
+# collectorのAPI呼び出し回数の記録（無料枠ガード用）
+.api_usage.json
