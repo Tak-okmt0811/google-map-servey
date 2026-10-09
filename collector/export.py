@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -505,10 +506,29 @@ def infer_closed_day(weekday_text: List[str]) -> str:
     return ""
 
 
-def infer_late_night(weekday_text: List[str]) -> str:
+LATE_NIGHT_CLOSE_HOURS = range(0, 6)  # 0時〜5時台に閉店 = 深夜営業
+
+
+def infer_late_night(weekday_text: List[str], periods: Optional[List[Dict[str, object]]] = None) -> str:
+    """閉店時刻が0〜5時台、または24時間営業なら深夜営業とみなす。
+
+    構造化データ（regularOpeningHours.periods）を優先し、無い場合は
+    "18時00分～1時00分" / "18:00～1:00" 形式の営業時間テキストから閉店時刻を読む。
+    """
+    if periods:
+        for period in periods:
+            close = period.get("close") if isinstance(period, dict) else None
+            if not isinstance(close, dict):
+                return "○"  # close が無い period は24時間営業
+            if close.get("hour") in LATE_NIGHT_CLOSE_HOURS:
+                return "○"
+        return "×"
+
     text = " ".join(weekday_text)
-    for marker in ["0:00", "00:00", "1:00", "01:00", "2:00", "02:00", "3:00", "03:00", "4:00", "04:00", "5:00", "05:00"]:
-        if marker in text:
+    if "24 時間営業" in text or "24時間営業" in text:
+        return "○"
+    for close_hour in re.findall(r"[～~\-–]\s*(\d{1,2})\s*(?:時|:)", text):
+        if int(close_hour) in LATE_NIGHT_CLOSE_HOURS:
             return "○"
     return "×"
 
@@ -655,7 +675,8 @@ def build_rows(
         genre = infer_genre(types, name, config)
         subgenre = infer_subgenre(name, types, config)
         closed_day = infer_closed_day(weekday_text)
-        late_night = infer_late_night(weekday_text)
+        periods = opening_hours.get("periods") if isinstance(opening_hours, dict) else None
+        late_night = infer_late_night(weekday_text, periods)
         features = infer_features(name, weekday_text, editorial, config)
         competitiveness = infer_competitiveness(distance_m, rating, reviews, genre, config)
         target = infer_target(genre, price_text, late_night, config)

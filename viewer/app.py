@@ -31,6 +31,9 @@ NO_OWN_STORE = "（選択しない）"
 COMMON_RATE = 0.6  # これ以上の競合が持つ属性 = 持っていないと不利
 RARE_RATE = 0.2  # これ以下の競合しか持たない属性 = 打ち出せば差別化になる
 MIN_REGISTERED = 5  # 登録済みの競合がこれ未満の属性は判定しない
+MIN_SAME_CATEGORY = 10  # 同カテゴリの競合がこれ以上いれば、同カテゴリとの比較を初期値にする
+# 「ある＝強み」とは言えない属性は判定から外す
+EXCLUDED_FROM_JUDGEMENT = {"現金のみ"}
 
 BASIC_PROFILE_ITEMS = {
     "電話番号": "電話番号",
@@ -215,6 +218,8 @@ def build_attribute_table(competitors: pd.DataFrame, own_row: Optional[pd.Series
     own_attrs = attribute_frame(own_row.to_frame().T) if own_row is not None else None
     records = []
     for attr in comp_attrs.columns:
+        if attr in EXCLUDED_FROM_JUDGEMENT:
+            continue
         values = comp_attrs[attr]
         has = int((values == "あり").sum())
         registered = int(values.isin(["あり", "なし"]).sum())
@@ -330,7 +335,24 @@ def render_differentiation_tab(competitors: pd.DataFrame, own_row: Optional[pd.S
             "属性の保有率・プロフィール充実度が表示されます。"
         )
 
-    attr_table = build_attribute_table(competitors, own_row) if (has_attrs or "深夜営業" in competitors.columns) else None
+    # 比較対象: 業態が違う店（例: バーに対するラーメン店）まで含めると判定がぶれるため、
+    # 同カテゴリの競合が十分いれば同カテゴリとの比較を初期値にする
+    base = competitors
+    own_cat = str(own_row.get("カテゴリ", "") or "").strip() if own_row is not None else ""
+    if own_cat and "カテゴリ" in competitors.columns:
+        same = competitors[competitors["カテゴリ"].fillna("").astype(str).str.strip() == own_cat]
+        scope_options = [f"自店と同じカテゴリ（{own_cat}・{len(same)}店）", f"周辺の全競合（{len(competitors)}店）"]
+        scope = st.radio(
+            "比較対象",
+            scope_options,
+            index=0 if len(same) >= MIN_SAME_CATEGORY else 1,
+            horizontal=True,
+            help="属性の保有率・判定・プロフィール充実度をどの競合と比べるか。カテゴリ分布は常に全競合で表示します。",
+        )
+        if scope == scope_options[0]:
+            base = same
+
+    attr_table = build_attribute_table(base, own_row) if (has_attrs or "深夜営業" in base.columns) else None
 
     # 1. 説明文に入れる言葉の候補（自店選択時のみ）
     if own_row is not None and attr_table is not None:
@@ -402,7 +424,7 @@ def render_differentiation_tab(competitors: pd.DataFrame, own_row: Optional[pd.S
     # 4. プロフィール充実度
     if has_attrs:
         st.markdown("#### プロフィール充実度")
-        comp_scores = profile_scores(competitors)["プロフィール充実度"]
+        comp_scores = profile_scores(base)["プロフィール充実度"]
         if own_row is not None:
             own_score = float(profile_scores(own_row.to_frame().T)["プロフィール充実度"].iloc[0])
             m1, m2, m3 = st.columns(3)
@@ -414,7 +436,7 @@ def render_differentiation_tab(competitors: pd.DataFrame, own_row: Optional[pd.S
                 label for col, label in BASIC_PROFILE_ITEMS.items()
                 if col in own_row.index and str(own_row.get(col, "") if pd.notna(own_row.get(col)) else "").strip() == ""
             ]
-            comp_attr = attribute_frame(competitors).drop(columns=["深夜営業"], errors="ignore")
+            comp_attr = attribute_frame(base).drop(columns=["深夜営業"], errors="ignore")
             own_attr = attribute_frame(own_row.to_frame().T).drop(columns=["深夜営業"], errors="ignore")
             registered_rate = comp_attr.isin(["あり", "なし"]).mean()
             missing_attrs = [a for a in own_attr.columns if own_attr[a].iloc[0] == "" and registered_rate.get(a, 0) >= 0.5]
