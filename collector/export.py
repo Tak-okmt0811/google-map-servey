@@ -7,6 +7,7 @@
 出力するExcelのシート:
   - 店舗:           1店舗1行。カテゴリ・属性（属性_○○列）・口コミ要約などを含む
   - キーワード順位: 検索キーワードごとに、基点で検索したときの表示順位
+  - 地点別順位:     検索キーワードごとに、基点と周辺8地点のそれぞれで検索したときの表示順位
   - 口コミ:         1店舗あたり最大5件の口コミ（投稿者名は保存しない）
 
 Usage example:
@@ -141,6 +142,8 @@ DETAILS_FIELD_MASK = ",".join(
 
 STORE_SHEET = "店舗"
 KEYWORD_SHEET = "キーワード順位"
+GRID_SHEET = "地点別順位"
+GRID_COLUMNS = ["キーワード", "地点番号", "地点緯度", "地点経度", "順位", "place_id", "店舗名"]
 REVIEW_SHEET = "口コミ"
 
 
@@ -181,6 +184,7 @@ def output_columns(origin_label: str) -> List[str]:
         "拠点住所",
         "拠点緯度",
         "拠点経度",
+        "収集半径(m)",
     ]
 
 
@@ -196,6 +200,7 @@ class PlaceSummary:
     user_ratings_total: Optional[int]
     category: str = ""
     keywords: Dict[str, Optional[int]] = field(default_factory=dict)  # キーワード -> 基点検索での順位
+    grid_ranks: Dict[Tuple[str, int], int] = field(default_factory=dict)  # (キーワード, 地点番号) -> その地点での順位
 
 
 def parse_args() -> argparse.Namespace:
@@ -344,7 +349,7 @@ def fetch_nearby_places(
     for kw in keywords:
         print(f"[INFO] Places API (New) キーワード検索: {kw}")
         for center_index, (c_lat, c_lng, c_radius) in enumerate(centers):
-            # 基点（先頭の中心点）での並び順を、そのキーワードでの表示順位として記録する
+            # 地点ごとの並び順を記録する。基点（先頭の中心点）での並び順は、そのキーワードでの表示順位にもなる
             is_origin = center_index == 0
             rank = 0
             page_token = None
@@ -397,6 +402,9 @@ def fetch_nearby_places(
                             category=category.get("text", "") if isinstance(category, dict) else "",
                         )
                         places[place_id] = summary
+
+                    prev_grid = summary.grid_ranks.get((kw, center_index))
+                    summary.grid_ranks[(kw, center_index)] = rank if prev_grid is None else min(prev_grid, rank)
 
                     if is_origin:
                         prev = summary.keywords.get(kw)
@@ -626,14 +634,17 @@ def build_rows(
     origin_address: str,
     origin_lat: float,
     origin_lng: float,
+    radius: int,
     places: Dict[str, PlaceSummary],
     details_map: Dict[str, Dict[str, object]],
     config: CollectorConfig,
-) -> Tuple[List[Dict[str, object]], List[Dict[str, object]], List[Dict[str, object]]]:
-    """店舗・キーワード順位・口コミの3シート分の行を作る。places は半径内に絞り込み済みであること。"""
+) -> Tuple[List[Dict[str, object]], List[Dict[str, object]], List[Dict[str, object]], List[Dict[str, object]]]:
+    """店舗・キーワード順位・口コミ・地点別順位の4シート分の行を作る。places は半径内に絞り込み済みであること。"""
     store_rows: List[Dict[str, object]] = []
     keyword_rows: List[Dict[str, object]] = []
     review_rows: List[Dict[str, object]] = []
+    grid_rows: List[Dict[str, object]] = []
+    centers = _sub_centers(origin_lat, origin_lng, radius)
 
     for p in places.values():
         distance_m = haversine_m(origin_lat, origin_lng, p.lat, p.lng)
@@ -713,6 +724,7 @@ def build_rows(
                 "拠点住所": origin_address,
                 "拠点緯度": origin_lat,
                 "拠点経度": origin_lng,
+                "収集半径(m)": radius,
             }
         )
 
@@ -727,10 +739,25 @@ def build_rows(
                 }
             )
 
+        for (kw, center_index), rank in p.grid_ranks.items():
+            c_lat, c_lng, _ = centers[center_index]
+            grid_rows.append(
+                {
+                    "キーワード": kw,
+                    "地点番号": center_index,
+                    "地点緯度": c_lat,
+                    "地点経度": c_lng,
+                    "順位": rank,
+                    "place_id": p.place_id,
+                    "店舗名": name,
+                }
+            )
+
     distance_col = f"{origin_label}からの距離(m)"
     store_rows.sort(key=lambda row: int(row[distance_col]))
     keyword_rows.sort(key=lambda row: (row["キーワード"], row["順位"] is None, row["順位"] or 0))
-    return store_rows, keyword_rows, review_rows
+    grid_rows.sort(key=lambda row: (row["キーワード"], row["地点番号"], row["順位"]))
+    return store_rows, keyword_rows, review_rows, grid_rows
 
 
 def print_estimate(guard: UsageGuard, keywords: List[str], radius: int) -> None:
@@ -781,8 +808,8 @@ def main() -> None:
     print(f"[INFO] 検索ヒット {len(found)}件のうち、半径{args.radius}m内の {len(places)}件の詳細を取得します")
     details_map = fetch_all_place_details(list(places.keys()), api_key, args.detail_workers, guard)
 
-    store_rows, keyword_rows, review_rows = build_rows(
-        origin_label, formatted, lat, lng, places, details_map, config
+    store_rows, keyword_rows, review_rows, grid_rows = build_rows(
+        origin_label, formatted, lat, lng, args.radius, places, details_map, config
     )
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -790,12 +817,17 @@ def main() -> None:
     store_df = pd.DataFrame(store_rows).reindex(columns=output_columns(origin_label))
     keyword_df = pd.DataFrame(keyword_rows, columns=["キーワード", "順位", "place_id", "店舗名", "距離(m)"])
     review_df = pd.DataFrame(review_rows, columns=["place_id", "店舗名", "評価", "投稿日", "本文"])
+    grid_df = pd.DataFrame(grid_rows, columns=GRID_COLUMNS)
 
     with pd.ExcelWriter(output) as writer:
         store_df.to_excel(writer, sheet_name=STORE_SHEET, index=False)
         keyword_df.to_excel(writer, sheet_name=KEYWORD_SHEET, index=False)
         review_df.to_excel(writer, sheet_name=REVIEW_SHEET, index=False)
-    print(f"[DONE] Excel出力完了: {output}（店舗 {len(store_df)}件 / キーワード順位 {len(keyword_df)}行 / 口コミ {len(review_df)}件）")
+        grid_df.to_excel(writer, sheet_name=GRID_SHEET, index=False)
+    print(
+        f"[DONE] Excel出力完了: {output}（店舗 {len(store_df)}件 / キーワード順位 {len(keyword_df)}行 / "
+        f"口コミ {len(review_df)}件 / 地点別順位 {len(grid_df)}行）"
+    )
 
     csv_dir = Path(output).resolve().parent / "data"
     csv_dir.mkdir(exist_ok=True)

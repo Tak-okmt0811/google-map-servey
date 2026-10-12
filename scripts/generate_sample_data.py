@@ -21,19 +21,25 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from collector.export import (  # noqa: E402
+    GRID_COLUMNS,
+    GRID_SHEET,
     KEYWORD_SHEET,
     REVIEW_SHEET,
     STORE_SHEET,
     attribute_columns,
     haversine_m,
     output_columns,
+    _sub_centers,
 )
 
 OUT_PATH = ROOT / "viewer" / "data" / "sample_places.xlsx"
 ORIGIN_LABEL = "サンプル拠点"
-ORIGIN_ADDRESS = "（デモ用ダミー住所）大阪府サンプル市サンプル1丁目"
-ORIGIN_LAT = 34.726893
-ORIGIN_LNG = 135.501036
+ORIGIN_ADDRESS = "（デモ用ダミー）大阪市中央区 本町付近"
+# 大阪市の中心部（本町付近）。店舗・住所は架空で、座標だけをこの周辺にランダムに置く
+ORIGIN_LAT = 34.682200
+ORIGIN_LNG = 135.500800
+RADIUS = 1000
+MAX_RANK = 60  # Text Search は最大3ページ×20件
 TODAY = date(2026, 10, 1)
 N_STORES = 60
 KEYWORDS = ["bar", "居酒屋", "焼き鳥", "イタリアン", "ダイニング", "スナック", "ラーメン"]
@@ -92,18 +98,69 @@ def attribute_value(label: str) -> str:
     return "あり" if random.random() < ATTRIBUTE_RATES[label] else "なし"
 
 
+def simulate_ranks(
+    stores: list[dict], hits: dict[str, list[str]], distance_col: str
+) -> tuple[list[dict], list[dict]]:
+    """地点ごとの検索順位を、評価・口コミ件数・検索地点からの距離で決まる架空のスコアで作る。
+
+    基点（地点番号0）での順位を「キーワード順位」シートにも使い、2つのシートの整合を取る。
+    """
+    centers = _sub_centers(ORIGIN_LAT, ORIGIN_LNG, RADIUS)
+    open_stores = [s for s in stores if s["営業状態"] != "閉業"]
+    grid_rows: list[dict] = []
+    origin_rank: dict[tuple[str, str], int] = {}
+    found: set[tuple[str, str]] = set()
+    for kw in KEYWORDS:
+        for idx, (c_lat, c_lng, c_radius) in enumerate(centers):
+            scored = []
+            for s in open_stores:
+                if kw not in hits[s["place_id"]]:
+                    continue
+                d_km = haversine_m(c_lat, c_lng, s["緯度"], s["経度"]) / 1000
+                if d_km * 1000 > c_radius * 1.5:
+                    continue
+                score = (
+                    s["Google評価"] * 0.6
+                    + math.log1p(s["口コミ件数"]) * 0.35
+                    - d_km * 2.5
+                    + (0.3 if hits[s["place_id"]][0] == kw else 0.0)
+                    + random.gauss(0, 0.3)
+                )
+                scored.append((score, s))
+            scored.sort(key=lambda t: t[0], reverse=True)
+            for rank, (_, s) in enumerate(scored[:MAX_RANK], start=1):
+                grid_rows.append({
+                    "キーワード": kw, "地点番号": idx, "地点緯度": c_lat, "地点経度": c_lng,
+                    "順位": rank, "place_id": s["place_id"], "店舗名": s["店舗名"],
+                })
+                found.add((kw, s["place_id"]))
+                if idx == 0:
+                    origin_rank[(kw, s["place_id"])] = rank
+
+    by_id = {s["place_id"]: s for s in open_stores}
+    keyword_rows = [
+        {
+            "キーワード": kw, "順位": origin_rank.get((kw, pid)), "place_id": pid,
+            "店舗名": by_id[pid]["店舗名"], "距離(m)": by_id[pid][distance_col],
+        }
+        for kw, pid in sorted(found)
+    ]
+    return grid_rows, keyword_rows
+
+
 def main() -> None:
     random.seed(42)
     distance_col = f"{ORIGIN_LABEL}からの距離(m)"
-    stores, keyword_rows, review_rows = [], [], []
+    stores, review_rows = [], []
+    hits: dict[str, list[str]] = {}  # place_id -> ヒットするキーワード
     names_used: set[str] = set()
 
     for i in range(N_STORES):
         is_own = i == 0
-        category = "ダイニングバー" if is_own else random.choices(list(CATEGORIES), CATEGORY_WEIGHTS)[0]
+        category = "バー" if is_own else random.choices(list(CATEGORIES), CATEGORY_WEIGHTS)[0]
         genre, suffixes, hit_keywords = CATEGORIES[category]
         if is_own:
-            name = "【サンプル自店】デモダイニング"
+            name = "【サンプル自店】デモバー"
         else:
             name = f"{random.choice(['サンプル', 'デモ', 'テスト', 'モデル', '架空'])}{random.choice(suffixes)} {chr(65 + i % 26)}{i}"
         names_used.add(name)
@@ -161,32 +218,29 @@ def main() -> None:
             "拠点住所": ORIGIN_ADDRESS,
             "拠点緯度": ORIGIN_LAT,
             "拠点経度": ORIGIN_LNG,
+            "収集半径(m)": RADIUS,
             "自店": "○" if is_own else "",
         })
+        hits[f"sample_{i}"] = hit_keywords + [kw for kw in KEYWORDS if kw not in hit_keywords and random.random() < 0.08]
 
-        own_ranks = {"ダイニング": 4, "bar": 17, "居酒屋": 31}
-        for kw in KEYWORDS:
-            if is_own:
-                if kw in own_ranks or kw in hit_keywords:
-                    keyword_rows.append({"キーワード": kw, "順位": own_ranks.get(kw), "place_id": f"sample_{i}",
-                                         "店舗名": name, "距離(m)": distance})
-                continue
-            if kw in hit_keywords or random.random() < 0.08:
-                rank = random.randint(1, 60) if random.random() < 0.6 else None
-                keyword_rows.append({"キーワード": kw, "順位": rank, "place_id": f"sample_{i}",
-                                     "店舗名": name, "距離(m)": distance})
+    grid_rows, keyword_rows = simulate_ranks(stores, hits, distance_col)
 
     store_df = pd.DataFrame(stores).reindex(columns=output_columns(ORIGIN_LABEL) + ["自店"])
     store_df = store_df.sort_values(distance_col)
     keyword_df = pd.DataFrame(keyword_rows).sort_values(["キーワード", "順位"], na_position="last")
     review_df = pd.DataFrame(review_rows)
+    grid_df = pd.DataFrame(grid_rows, columns=GRID_COLUMNS)
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(OUT_PATH) as writer:
         store_df.to_excel(writer, sheet_name=STORE_SHEET, index=False)
         keyword_df.to_excel(writer, sheet_name=KEYWORD_SHEET, index=False)
         review_df.to_excel(writer, sheet_name=REVIEW_SHEET, index=False)
-    print(f"wrote {OUT_PATH}: 店舗 {len(store_df)} / キーワード順位 {len(keyword_df)} / 口コミ {len(review_df)}")
+        grid_df.to_excel(writer, sheet_name=GRID_SHEET, index=False)
+    print(
+        f"wrote {OUT_PATH}: 店舗 {len(store_df)} / キーワード順位 {len(keyword_df)} / "
+        f"口コミ {len(review_df)} / 地点別順位 {len(grid_df)}"
+    )
 
 
 if __name__ == "__main__":
