@@ -19,6 +19,18 @@ Googleは、ローカル検索（Googleマップ）の表示順位を主に
 | **知名度**（どれだけ知られ、評価されているか） | 評価・口コミ件数・最新の口コミ日を競合と比較 | 上位の店との口コミ件数の差を、具体的な目標にする |
 | **距離**（検索した人の場所から近いか） | 地図上の競合の分布、場所ごとの順位の違い、出店候補地の比較 | 店は動かせないので、出店前の場所選びの判断材料にする。自店が弱いエリアを知る |
 
+## 使いかた
+
+画面の見かたと操作の手順は、スクリーンショット付きの[操作マニュアル](docs/manual.md)を参照してください
+（架空のサンプルデータで説明しています）。アプリの右上の「操作マニュアル（PDF）」からも、PDF版を
+ダウンロードできます。
+
+マニュアルを更新したら、PDF版も作り直してcommitしてください（Google Chromeが必要です）。
+
+```bash
+uv run --with markdown python scripts/build_manual_pdf.py
+```
+
 ## こんな方におすすめです
 
 **すでに店を営業しているオーナーの方**
@@ -80,7 +92,13 @@ viewer/                   # APIキー不要・公開デプロイ可能
     └── sample_places.xlsx  # 公開ポートフォリオ用のダミーデータ（架空の店舗）
 
 scripts/
-└── generate_sample_data.py # ダミーデータの生成（APIは使わない）
+├── generate_sample_data.py # ダミーデータの生成（APIは使わない）
+└── build_manual_pdf.py     # docs/manual.md から docs/manual.pdf を作る
+
+docs/
+├── manual.md               # 操作マニュアル（スクリーンショット付き）
+├── manual.pdf              # 上記のPDF版（アプリの右上からダウンロードできる）
+└── images/                 # マニュアルのスクリーンショット（サンプルデータ）
 
 .env                       # collector専用のAPIキー（Gitにはcommitしない）
 ```

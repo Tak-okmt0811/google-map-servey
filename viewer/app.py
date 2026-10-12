@@ -29,6 +29,8 @@ APP_DIR = Path(__file__).resolve().parent
 
 # ファイルがアップロードされていないときに表示する架空のサンプルデータ（大阪市中心部・本町付近）
 SAMPLE_PATH = APP_DIR / "data" / "sample_places.xlsx"
+# 操作マニュアル（docs/manual.md から scripts/build_manual_pdf.py で作る）
+MANUAL_PDF_PATH = APP_DIR.parent / "docs" / "manual.pdf"
 
 STORE_SHEET = "店舗"
 KEYWORD_SHEET = "キーワード順位"
@@ -70,6 +72,7 @@ STRONG_RATING = 4.0
 STRONG_OTHER_QUANTILE = 0.75  # 別カテゴリでも、口コミ件数が全店舗の上位25%なら「中」
 COMPETITION_COLORS = {"高": [220, 20, 60, 190], "中": [255, 165, 0, 170], "低": [30, 144, 255, 140]}
 MAP_DOT_SIZE = 12  # 地図の点の大きさの初期値
+CIRCLE_COLOR = [255, 255, 255, 190]  # 分析半径・収集範囲の円（暗い地図の上でも見えるように白）
 # キーワード順位: 上位10店のうち、比較するカテゴリの店がこの数以上いれば「関係のあるキーワード」とみなす
 KEYWORD_RELATED_MIN = 3
 
@@ -193,6 +196,12 @@ def read_sheets(name: str, data) -> Dict[str, pd.DataFrame]:
 
 
 @st.cache_data(show_spinner=False)
+def read_manual_pdf(mtime: float) -> bytes:
+    """mtime はキャッシュのキー用。マニュアルを作り直したときに古いPDFが配られ続けないようにする。"""
+    return MANUAL_PDF_PATH.read_bytes()
+
+
+@st.cache_data(show_spinner=False)
 def read_sheets_cached(path_str: str, mtime: float) -> Dict[str, pd.DataFrame]:
     """mtime はキャッシュのキー用。ファイルを作り直したときに古い内容が表示され続けないようにする。"""
     return read_sheets(path_str, path_str)
@@ -301,8 +310,8 @@ def render_map(
             data=[{"path": build_circle_path(center_lat, center_lng, radius_m)}],
             get_path="path",
             get_width=2,
-            get_color=[70, 70, 70, 140],
-            width_min_pixels=1,
+            get_color=CIRCLE_COLOR,
+            width_min_pixels=2,
         ),
         pdk.Layer(
             "ScatterplotLayer",
@@ -720,8 +729,8 @@ def render_rank_map_tab(
             data=[{"path": build_circle_path(origin_lat, origin_lng, int(area_radius))}],
             get_path="path",
             get_width=2,
-            get_color=[70, 70, 70, 120],
-            width_min_pixels=1,
+            get_color=CIRCLE_COLOR,
+            width_min_pixels=2,
         ),
         pdk.Layer(
             "ScatterplotLayer",
@@ -736,9 +745,11 @@ def render_rank_map_tab(
             data=points[["地点緯度", "地点経度", "label"]],
             get_position="[地点経度, 地点緯度]",
             get_text="label",
-            get_size=18,
+            get_size=20,
+            size_units="pixels",
+            size_min_pixels=14,  # 下限を指定しないと、環境によって文字が小さすぎて表示されない
+            size_max_pixels=40,
             get_color=[255, 255, 255, 255],
-            font_weight="bold",
         ),
     ]
     store = stores[stores["place_id"].astype(str) == str(store_id)] if "place_id" in stores.columns else stores.iloc[0:0]
@@ -784,7 +795,7 @@ def render_rank_map_tab(
                 "基点での順位": f"{int(origin)}位" if origin is not None and pd.notna(origin) else "圏外",
                 "上位3位以内の地点数": f"{int((ranks <= 3).sum())} / {n_points}",
                 "上位10位以内の地点数": f"{int((ranks <= 10).sum())} / {n_points}",
-                "平均順位（表示された地点）": round(float(ranks.mean()), 1) if not ranks.empty else None,
+                "平均順位（表示された地点）": f"{ranks.mean():.1f}位" if not ranks.empty else "—",
             }
         )
     st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
@@ -921,8 +932,8 @@ def render_candidate_tab(
             + [{"path": build_circle_path(s["lat"], s["lng"], radius)} for s in sites[1:]],
             get_path="path",
             get_width=2,
-            get_color=[70, 70, 70, 140],
-            width_min_pixels=1,
+            get_color=CIRCLE_COLOR,
+            width_min_pixels=2,
         ),
         pdk.Layer(
             "ScatterplotLayer",
@@ -936,7 +947,7 @@ def render_candidate_tab(
             "ScatterplotLayer",
             data=site_df[["店舗名", "lat", "lng"]],
             get_position="[lng, lat]",
-            get_radius=36,
+            get_radius=110,
             get_fill_color=[21, 101, 192, 230],
             pickable=True,
         ),
@@ -945,9 +956,11 @@ def render_candidate_tab(
             data=site_df[["lat", "lng", "label"]],
             get_position="[lng, lat]",
             get_text="label",
-            get_size=16,
+            get_size=18,
+            size_units="pixels",
+            size_min_pixels=14,
+            size_max_pixels=40,
             get_color=[255, 255, 255, 255],
-            font_weight="bold",
         ),
     ]
     view = pdk.ViewState(latitude=origin_lat, longitude=origin_lng, zoom=14, pitch=0)
@@ -1046,7 +1059,19 @@ def render_store_list_tab(stores: pd.DataFrame, own_row: Optional[pd.Series], ra
 
 
 st.set_page_config(page_title="競合分析ダッシュボード", page_icon="📍", layout="wide")
-st.title("競合分析ダッシュボード")
+title_col, manual_col = st.columns([3, 1], vertical_alignment="center")
+title_col.title("競合分析ダッシュボード")
+if MANUAL_PDF_PATH.exists():
+    manual_col.download_button(
+        "操作マニュアル（PDF）",
+        read_manual_pdf(MANUAL_PDF_PATH.stat().st_mtime),
+        file_name="競合分析ダッシュボード_操作マニュアル.pdf",
+        mime="application/pdf",
+        icon=":material/download:",
+        on_click="ignore",
+        width="stretch",
+        help="画面の見かたと操作の手順を、スクリーンショット付きで説明したマニュアルです。",
+    )
 st.caption("MEO対策のための周辺競合・差別化分析（距離・評価・口コミ・属性・カテゴリ）")
 
 with st.expander("このツールについて（どんな人に役立つか）"):
